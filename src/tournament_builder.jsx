@@ -1554,10 +1554,11 @@ function Field({ label, children }) {
  return (<div><label className="block text-[10px] font-bold uppercase tracking-widest text-neutral-500 mb-1.5">{label}</label>{children}</div>);
 }
 function Metric({ label, value, colorClass, warning }) {
+ const inverted = (colorClass || '').includes('text-white');
  return (
  <div className={`p-3 border ${warning ? 'border-[#e30613]/40 bg-[#e30613]/5' : 'border-black/10 bg-[#f5f2ec]'} ${colorClass || ''}`}>
- <div className="text-[10px] font-bold text-neutral-500 uppercase tracking-widest">{label}</div>
- <div className="text-base font-black mt-0.5 text-[#0c0c0c]">{value}</div>
+ <div className={`text-[10px] font-bold uppercase tracking-widest ${inverted ? 'text-neutral-300' : 'text-neutral-500'}`}>{label}</div>
+ <div className={`text-base font-black mt-0.5 ${inverted ? 'text-white' : 'text-[#0c0c0c]'}`}>{value}</div>
  </div>
  );
 }
