@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { createRoot } from 'react-dom/client';
 import * as XLSX from 'xlsx';
 import { Settings, Calendar, Download, Trophy, AlertCircle, Check, Sparkles } from 'lucide-react';
 
@@ -913,6 +914,7 @@ export default function TournamentBuilder() {
   const [scoreModal, setScoreModal] = useState(null);
   const [importModal, setImportModal] = useState(false);
   const [qrModal, setQrModal] = useState(null); // { matchId, matchLabel }
+  const [protocolModal, setProtocolModal] = useState(null); // { matchId, matchLabel, t1Label, t2Label, sid1, sid2 }
 
   // Загрузка из localStorage при монтировании
   useEffect(() => {
@@ -1162,7 +1164,7 @@ export default function TournamentBuilder() {
       return <JudgeView matchLabel={m.phase === 'group' ? m.label : (m.roundName + (m.isBronze ? ' (бронза)' : ''))}
         t1Label={t1Label} t2Label={t2Label} color1={sid1 ? teamColors[sid1] : null} color2={sid2 ? teamColors[sid2] : null}
         existing={scores[m.id]}
-        onSave={(a, b) => setScores({ ...scores, [m.id]: { a, b } })} />;
+        onSave={(a, b, events) => setScores({ ...scores, [m.id]: { a, b, events } })} />;
     }
   }
 
@@ -1461,6 +1463,7 @@ export default function TournamentBuilder() {
   setScoreModal={setScoreModal}
   setImportModal={setImportModal}
   setQrModal={setQrModal}
+  setProtocolModal={setProtocolModal}
  />
  )}
 
@@ -1484,7 +1487,7 @@ export default function TournamentBuilder() {
   modal={scoreModal}
   scores={scores}
   teamColors={teamColors}
-  onSave={(a, b) => { setScores({ ...scores, [scoreModal.matchId]: { a, b } }); setScoreModal(null); }}
+  onSave={(a, b, events) => { setScores({ ...scores, [scoreModal.matchId]: { a, b, events } }); setScoreModal(null); }}
   onClear={() => { const s = { ...scores }; delete s[scoreModal.matchId]; setScores(s); setScoreModal(null); }}
   onClose={() => setScoreModal(null)}
  />
@@ -1493,6 +1496,16 @@ export default function TournamentBuilder() {
  {/* Модалка QR-кода судьи */}
  {qrModal && (
  <QRModal matchLabel={qrModal.matchLabel} matchId={qrModal.matchId} onClose={() => setQrModal(null)} />
+ )}
+
+ {/* Модалка печатного протокола */}
+ {protocolModal && (
+ <ProtocolModal
+  modal={protocolModal}
+  scores={scores}
+  teamColors={teamColors}
+  onClose={() => setProtocolModal(null)}
+ />
  )}
 
  {/* Модалка импорта команд списком */}
@@ -1511,7 +1524,7 @@ export default function TournamentBuilder() {
  )}
  </div>
  {/* Липкая кнопка «Скачать xlsx» — только на мобильном, скрывается когда открыта любая модалка */}
- {!scoreModal && !importModal && !qrModal && (
+ {!scoreModal && !importModal && !qrModal && !protocolModal && (
  <div className="lg:hidden fixed bottom-0 left-0 right-0 p-3 bg-white/95 backdrop-blur border-t border-black/10 z-40" style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}>
  <button onClick={handleDownload} className="w-full bg-[#e30613] active:bg-[#b1040f] text-white font-bold py-3.5 px-4 rounded flex items-center justify-center gap-2 text-base tracking-wide uppercase">
  <Download className="w-5 h-5" />Скачать xlsx
@@ -1526,6 +1539,9 @@ export default function TournamentBuilder() {
   header, nav, .print\\:hidden { display: none !important; }
   #print-area { padding: 0 !important; margin: 0 !important; }
   .break-inside-avoid { break-inside: avoid; page-break-inside: avoid; }
+  body.protocol-printing * { visibility: hidden !important; }
+  body.protocol-printing #protocol-print-root, body.protocol-printing #protocol-print-root * { visibility: visible !important; }
+  body.protocol-printing #protocol-print-root { position: fixed; inset: 0; padding: 15mm !important; }
 }`}</style>
  </div>
  );
@@ -1564,7 +1580,7 @@ function Metric({ label, value, colorClass, warning }) {
 }
 
 // ============ ЭКРАН «ТУРНИР» ============
-function TournamentView({ groups, matches, scores, setScores, teamNames, setTeamNames, teamColors, setTeamColors, teamName, teamLabel, resolveSlot, allStandings, actualSystem, setScoreModal, setImportModal, setQrModal }) {
+function TournamentView({ groups, matches, scores, setScores, teamNames, setTeamNames, teamColors, setTeamColors, teamName, teamLabel, resolveSlot, allStandings, actualSystem, setScoreModal, setImportModal, setQrModal, setProtocolModal }) {
   const [editingTeams, setEditingTeams] = useState(false);
   const totalMatches = matches.length;
   const playedMatches = matches.filter((m) => {
@@ -1711,6 +1727,10 @@ function TournamentView({ groups, matches, scores, setScores, teamNames, setTeam
                         </span>
                       </div>
                     </button>
+                    <button onClick={() => setProtocolModal({ matchId: m.id, matchLabel: m.label, t1Label: teamLabel(m, 't1'), t2Label: teamLabel(m, 't2'), sid1: sd1, sid2: sd2 })}
+                      className="w-11 flex items-center justify-center text-neutral-400 hover:text-[#e30613] border-l border-black/5" title="Печатный протокол">
+                      <span className="text-lg">🖨</span>
+                    </button>
                     <button onClick={() => setQrModal({ matchId: m.id, matchLabel: m.label })}
                       className="w-11 flex items-center justify-center text-neutral-400 hover:text-[#e30613] border-l border-black/5" title="QR для судьи">
                       <span className="text-lg">▦</span>
@@ -1760,6 +1780,10 @@ function TournamentView({ groups, matches, scores, setScores, teamNames, setTeam
                       </span>
                     </div>
                   </button>
+                  <button onClick={() => setProtocolModal({ matchId: m.id, matchLabel: m.roundName + (m.isBronze ? ' (бронза)' : ''), t1Label: t1, t2Label: t2, sid1, sid2 })}
+                    className="w-11 flex items-center justify-center text-neutral-400 hover:text-[#e30613] border-l border-black/5" title="Печатный протокол">
+                    <span className="text-lg">🖨</span>
+                  </button>
                   <button onClick={() => setQrModal({ matchId: m.id, matchLabel: m.roundName + (m.isBronze ? ' (бронза)' : '') })}
                     className="w-11 flex items-center justify-center text-neutral-400 hover:text-[#e30613] border-l border-black/5" title="QR для судьи">
                     <span className="text-lg">▦</span>
@@ -1793,10 +1817,12 @@ function TournamentView({ groups, matches, scores, setScores, teamNames, setTeam
 function JudgeView({ matchLabel, t1Label, t2Label, color1, color2, existing, onSave }) {
   const [a, setA] = useState((existing && existing.a != null) ? existing.a : 0);
   const [b, setB] = useState((existing && existing.b != null) ? existing.b : 0);
+  const [events, setEvents] = useState((existing && existing.events) || []);
+  const [showEvents, setShowEvents] = useState(false);
   const [saved, setSaved] = useState(false);
   const clamp = (v) => Math.max(0, Math.min(99, v));
   const handleSave = () => {
-    onSave(a, b);
+    onSave(a, b, events);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -1834,6 +1860,19 @@ function JudgeView({ matchLabel, t1Label, t2Label, color1, color2, existing, onS
             <button onClick={() => side.set(0)} className="mt-3 text-[10px] font-bold uppercase tracking-widest text-neutral-400 hover:text-[#e30613]">Обнулить</button>
           </div>
         ))}
+      </div>
+
+      {/* VAR / события */}
+      <div className="border-t border-black/10">
+        <button onClick={() => setShowEvents(!showEvents)} className="w-full px-4 py-3 flex items-center justify-between text-xs font-bold uppercase tracking-widest text-neutral-500">
+          <span>🟨 VAR / События{events.length > 0 ? ` (${events.length})` : ''}</span>
+          <span>{showEvents ? '▲' : '▼'}</span>
+        </button>
+        {showEvents && (
+          <div className="px-4 pb-4">
+            <EventsEditor events={events} setEvents={setEvents} t1Label={t1Label} t2Label={t2Label} compact />
+          </div>
+        )}
       </div>
 
       {/* Нижняя кнопка */}
@@ -1891,6 +1930,94 @@ function QRModal({ matchLabel, matchId, onClose }) {
             Судья сканирует QR камерой телефона → сразу открывается ввод счёта только этого матча
           </div>
           <button onClick={copyLink} className="w-full py-3 bg-[#0c0c0c] text-white font-bold uppercase tracking-widest text-xs">📋 Копировать ссылку</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============ ПЕЧАТНЫЙ ПРОТОКОЛ МАТЧА (РФС-стиль) ============
+function ProtocolModal({ modal, scores, onClose }) {
+  useEffect(() => {
+    document.body.classList.add('protocol-printing');
+    return () => document.body.classList.remove('protocol-printing');
+  }, []);
+  const sc = scores[modal.matchId] || {};
+  const played = sc.a != null && sc.b != null;
+  const events = sc.events || [];
+  const today = new Date().toLocaleDateString('ru-RU', { year: 'numeric', month: 'long', day: 'numeric' });
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
+      <div className="bg-white w-full sm:max-w-2xl sm:rounded max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()} style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <div className="px-4 py-3 border-b border-black/10 flex items-center justify-between print:hidden">
+          <div>
+            <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">{modal.matchLabel}</div>
+            <div className="text-sm font-black">Протокол матча</div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button onClick={() => window.print()} className="px-3 py-1.5 bg-[#e30613] active:bg-[#b1040f] text-white text-xs font-bold uppercase tracking-widest">🖨 Печать</button>
+            <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-neutral-400 hover:text-[#0c0c0c] text-xl">×</button>
+          </div>
+        </div>
+
+        <div id="protocol-print-root" className="p-6 sm:p-8 text-[#0c0c0c]">
+          <div className="text-center mb-6">
+            <div className="text-[10px] font-bold tracking-widest text-[#e30613]">MITIN SPORT GROUP</div>
+            <h2 className="text-xl font-black uppercase tracking-wide mt-1">Протокол матча</h2>
+            <div className="text-xs text-neutral-500 mt-1">{modal.matchLabel}</div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 text-xs mb-6 border border-black/20 p-3">
+            <div><span className="text-neutral-500">Дата:</span> ______________</div>
+            <div><span className="text-neutral-500">Время:</span> ______________</div>
+            <div><span className="text-neutral-500">Поле:</span> ______________</div>
+          </div>
+
+          <div className="grid grid-cols-3 items-center gap-3 mb-6 border-y-2 border-black py-4">
+            <div className="text-center font-black text-sm">{modal.t1Label}</div>
+            <div className="text-center text-4xl font-black tabular-nums">{played ? `${sc.a} : ${sc.b}` : '— : —'}</div>
+            <div className="text-center font-black text-sm">{modal.t2Label}</div>
+          </div>
+
+          <div className="mb-6">
+            <div className="text-xs font-black uppercase tracking-widest mb-2 border-b border-black/20 pb-1">VAR / События матча</div>
+            {events.length === 0 ? (
+              <div className="text-xs text-neutral-400">Эпизодов не зафиксировано</div>
+            ) : (
+              <table className="w-full text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-black/20 text-left">
+                    <th className="py-1 pr-2 font-bold">Мин.</th>
+                    <th className="py-1 pr-2 font-bold">Команда</th>
+                    <th className="py-1 pr-2 font-bold">Событие</th>
+                    <th className="py-1 font-bold">Комментарий</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {events.map((e) => (
+                    <tr key={e.id} className="border-b border-black/10">
+                      <td className="py-1 pr-2 tabular-nums">{e.minute != null ? `${e.minute}'` : '—'}</td>
+                      <td className="py-1 pr-2">{e.team === 'a' ? modal.t1Label : e.team === 'b' ? modal.t2Label : '—'}</td>
+                      <td className="py-1 pr-2">{eventLabel(e.type)}</td>
+                      <td className="py-1">{e.note || '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 text-xs mt-10">
+            {[{ role: 'Главный судья', name: null }, { role: 'Представитель команды', name: modal.t1Label }, { role: 'Представитель команды', name: modal.t2Label }].map((p, i) => (
+              <div key={i}>
+                <div className="text-neutral-500 mb-6">{p.role}{p.name ? `: ${p.name}` : ''}</div>
+                <div className="border-t border-black pt-1">ФИО, подпись</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="text-center text-[10px] text-neutral-400 mt-8">Сформировано в приложении «Конструктор турниров» MITIN SPORT GROUP · {today}</div>
         </div>
       </div>
     </div>
@@ -2091,10 +2218,72 @@ function ImportTeamsModal({ onImport, onClose }) {
   );
 }
 
+// ============ VAR / СОБЫТИЯ МАТЧА ============
+const EVENT_TYPES = [
+  { key: 'goal_cancelled', label: 'Гол отменён (VAR)' },
+  { key: 'penalty_var', label: 'Пенальти — просмотр VAR' },
+  { key: 'red_card', label: 'Удаление (красная карточка)' },
+  { key: 'yellow_card', label: 'Предупреждение (жёлтая карточка)' },
+  { key: 'other', label: 'Другое' },
+];
+const eventLabel = (key) => (EVENT_TYPES.find((t) => t.key === key) || {}).label || key;
+
+function EventsEditor({ events, setEvents, t1Label, t2Label, compact }) {
+  const [minute, setMinute] = useState('');
+  const [team, setTeam] = useState('a');
+  const [type, setType] = useState(EVENT_TYPES[0].key);
+  const [note, setNote] = useState('');
+
+  const addEvent = () => {
+    const ev = { id: Date.now() + Math.random(), minute: minute === '' ? null : Math.max(0, Math.min(150, Number(minute))), team, type, note: note.trim() };
+    setEvents([...(events || []), ev].sort((x, y) => (x.minute ?? 999) - (y.minute ?? 999)));
+    setMinute(''); setNote('');
+  };
+  const removeEvent = (id) => setEvents((events || []).filter((e) => e.id !== id));
+
+  return (
+    <div className={compact ? 'space-y-2' : 'space-y-3'}>
+      {(events || []).length > 0 && (
+        <div className="space-y-1.5">
+          {events.map((e) => (
+            <div key={e.id} className="flex items-center gap-2 text-xs bg-[#f5f2ec] border border-black/10 px-2.5 py-1.5">
+              <span className="font-black w-8 flex-shrink-0 tabular-nums">{e.minute != null ? `${e.minute}'` : '—'}</span>
+              <span className="flex-1 min-w-0">
+                <span className="font-bold">{eventLabel(e.type)}</span>
+                {e.team && <span className="text-neutral-500"> · {e.team === 'a' ? t1Label : t2Label}</span>}
+                {e.note && <span className="text-neutral-500"> · {e.note}</span>}
+              </span>
+              <button onClick={() => removeEvent(e.id)} className="text-neutral-400 hover:text-[#e30613] flex-shrink-0 text-base leading-none">×</button>
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="grid grid-cols-[3.5rem_1fr] gap-1.5">
+        <input type="number" min="0" max="150" placeholder="Мин." value={minute} onChange={(e) => setMinute(e.target.value)} className="inp text-xs px-1.5" />
+        <select value={type} onChange={(e) => setType(e.target.value)} className="inp text-xs">
+          {EVENT_TYPES.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+        </select>
+      </div>
+      <div className="grid grid-cols-2 gap-1.5">
+        <select value={team} onChange={(e) => setTeam(e.target.value)} className="inp text-xs">
+          <option value="a">{t1Label}</option>
+          <option value="b">{t2Label}</option>
+          <option value="">—</option>
+        </select>
+        <input type="text" placeholder="Комментарий (опц.)" value={note} onChange={(e) => setNote(e.target.value)} className="inp text-xs" />
+      </div>
+      <button onClick={addEvent} className="w-full py-2 text-[10px] font-bold uppercase tracking-widest border border-dashed border-black/20 text-neutral-500 hover:border-[#e30613] hover:text-[#e30613]">
+        + Добавить эпизод
+      </button>
+    </div>
+  );
+}
+
 function ScoreModal({ modal, scores, teamColors, onSave, onClear, onClose }) {
   const existing = scores[modal.matchId] || {};
   const [a, setA] = useState(existing.a != null ? existing.a : 0);
   const [b, setB] = useState(existing.b != null ? existing.b : 0);
+  const [events, setEvents] = useState(existing.events || []);
   const clamp = (v) => Math.max(0, Math.min(99, v));
   const c1 = teamColors && modal.sid1 && teamColors[modal.sid1];
   const c2 = teamColors && modal.sid2 && teamColors[modal.sid2];
@@ -2126,13 +2315,17 @@ function ScoreModal({ modal, scores, teamColors, onSave, onClear, onClose }) {
             </div>
           ))}
         </div>
+        <div className="px-4 pb-4">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 mb-2">VAR / События матча</div>
+          <EventsEditor events={events} setEvents={setEvents} t1Label={modal.t1Label} t2Label={modal.t2Label} />
+        </div>
         <div className="p-4 pt-0 flex gap-2">
           {(existing.a != null) && (
             <button onClick={onClear} className="flex-1 py-3 bg-white border border-black/15 text-[#0c0c0c] font-bold uppercase tracking-widest text-xs">
               Удалить
             </button>
           )}
-          <button onClick={() => onSave(a, b)} className="flex-[2] py-3 bg-[#e30613] active:bg-[#b1040f] text-white font-black uppercase tracking-widest text-sm">
+          <button onClick={() => onSave(a, b, events)} className="flex-[2] py-3 bg-[#e30613] active:bg-[#b1040f] text-white font-black uppercase tracking-widest text-sm">
             Сохранить {a}:{b}
           </button>
         </div>
@@ -2140,4 +2333,6 @@ function ScoreModal({ modal, scores, teamColors, onSave, onClear, onClose }) {
     </div>
   );
 }
+
+createRoot(document.getElementById('root')).render(<TournamentBuilder />);
 

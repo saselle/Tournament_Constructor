@@ -4,7 +4,7 @@
   "description": "MSG Конструктор турниров — веб-приложение для организации спортивных турниров",
   "private": true,
   "scripts": {
-    "build": "esbuild src/tournament_builder.jsx --bundle --minify --jsx=automatic --loader:.jsx=jsx --external:xlsx --define:process.env.NODE_ENV=\\\"production\\\" --outfile=dist/app_bundle.js"
+    "build": "esbuild src/tournament_builder.jsx --bundle --minify --jsx=automatic --loader:.jsx=jsx --alias:xlsx=./src/xlsx_global_shim.js --define:process.env.NODE_ENV=\\\"production\\\" --outfile=dist/app_bundle.js"
   },
   "dependencies": {
     "react": "^18.3.1",
