@@ -1811,7 +1811,7 @@ function TournamentView({ groups, matches, scores, setScores, teamNames, setTeam
                 <div key={m.id} className="flex items-stretch hover:bg-[#f5f2ec] transition">
                   <button onClick={() => setScoreModal({ matchId: m.id, sid1: sd1, sid2: sd2, t1Label: t1, t2Label: t2, matchLabel: m.roundName + (m.isBronze ? ' (бронза)' : '') })}
                     className="flex-1 flex items-center gap-2 sm:gap-3 p-3 text-left min-w-0">
-                    <div className="text-[10px] font-bold uppercase text-neutral-400 tracking-wider w-16 sm:w-20 flex-shrink-0">{m.roundName}{m.isBronze ? ' 🥉' : ''}</div>
+                    <div className="text-[10px] font-bold uppercase text-neutral-400 tracking-wider w-16 sm:w-20 flex-shrink-0">{m.roundName}{m.isBronze ? ' 🥉' : m.roundName === 'Финал' ? ' 🏆' : ''}</div>
                     <div className="flex-1 flex items-center justify-between gap-3 min-w-0">
                       <span className={`text-sm font-medium truncate flex items-center gap-1.5 ${played && sc.a > sc.b ? 'font-black text-[#0c0c0c]' : played && sc.a < sc.b ? 'text-neutral-500' : ''}`}>
                         {sd1 && teamColors[sd1] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd1] }} />}
@@ -2210,7 +2210,7 @@ function ResultsView({ groups, allStandings, matches, scores, teamColors, teamNa
                   const played = sc && sc.a != null && sc.b != null;
                   return (
                     <tr key={m.id} className="border-b border-black/5">
-                      <td className="p-2 text-[10px] font-bold uppercase tracking-wider text-neutral-500 w-24">{m.roundName}{m.isBronze ? ' 🥉' : ''}</td>
+                      <td className="p-2 text-[10px] font-bold uppercase tracking-wider text-neutral-500 w-24">{m.roundName}{m.isBronze ? ' 🥉' : m.roundName === 'Финал' ? ' 🏆' : ''}</td>
                       <td className="p-2 font-medium text-right w-2/5">{teamLabel(m, 't1')}</td>
                       <td className="p-2 text-center font-black tabular-nums w-16">{played ? `${sc.a}:${sc.b}` : '–:–'}</td>
                       <td className="p-2 font-medium w-2/5">{teamLabel(m, 't2')}</td>

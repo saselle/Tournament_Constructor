@@ -1,9 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <rect width="512" height="512" fill="#f5f2ec"/>
-  <!-- Красная полоса-акцент по диагонали в углу -->
-  <path d="M 512 0 L 512 100 L 400 0 Z" fill="#e30613"/>
-  <!-- Чёрный трофей по центру -->
-  <g transform="translate(256 260)" fill="#0c0c0c">
+  <defs>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#fbe08a"/>
+      <stop offset="45%" stop-color="#d4af37"/>
+      <stop offset="100%" stop-color="#a8791f"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="#e30613"/>
+  <!-- Золотой трофей по центру -->
+  <g transform="translate(256 260)" fill="url(#gold)">
     <!-- Ручки -->
     <path d="M -108 -30 Q -160 -30 -160 30 Q -160 100 -80 100 L -80 60 Q -120 60 -120 20 Q -120 10 -108 10 Z"/>
     <path d="M 108 -30 Q 160 -30 160 30 Q 160 100 80 100 L 80 60 Q 120 60 120 20 Q 120 10 108 10 Z"/>
@@ -16,5 +21,5 @@
     <rect x="-70" y="130" width="140" height="20" rx="3"/>
   </g>
   <!-- MSG подпись внизу -->
-  <text x="256" y="470" text-anchor="middle" font-family="Arial Black, sans-serif" font-weight="900" font-size="48" fill="#0c0c0c" letter-spacing="4">MSG</text>
+  <text x="256" y="470" text-anchor="middle" font-family="Arial Black, sans-serif" font-weight="900" font-size="48" fill="#ffffff" letter-spacing="4">MSG</text>
 </svg>
