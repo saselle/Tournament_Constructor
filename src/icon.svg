@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" fill="#f5f2ec"/>
+  <!-- Красная полоса-акцент по диагонали в углу -->
+  <path d="M 512 0 L 512 100 L 400 0 Z" fill="#e30613"/>
+  <!-- Чёрный трофей по центру -->
+  <g transform="translate(256 260)" fill="#0c0c0c">
+    <!-- Ручки -->
+    <path d="M -108 -30 Q -160 -30 -160 30 Q -160 100 -80 100 L -80 60 Q -120 60 -120 20 Q -120 10 -108 10 Z"/>
+    <path d="M 108 -30 Q 160 -30 160 30 Q 160 100 80 100 L 80 60 Q 120 60 120 20 Q 120 10 108 10 Z"/>
+    <!-- Чаша -->
+    <path d="M -110 -160 L 110 -160 L 110 40 Q 110 130 0 130 Q -110 130 -110 40 Z"/>
+    <ellipse cx="0" cy="-160" rx="110" ry="18"/>
+    <!-- Ножка + подставка -->
+    <rect x="-30" y="60" width="60" height="40"/>
+    <rect x="-90" y="100" width="180" height="30" rx="4"/>
+    <rect x="-70" y="130" width="140" height="20" rx="3"/>
+  </g>
+  <!-- MSG подпись внизу -->
+  <text x="256" y="470" text-anchor="middle" font-family="Arial Black, sans-serif" font-weight="900" font-size="48" fill="#0c0c0c" letter-spacing="4">MSG</text>
+</svg>
