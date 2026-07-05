@@ -924,6 +924,13 @@ const tournamentDataKey = (id) => `msg_tournament_data_v1:${id}`;
 const makeTournamentId = () => `t_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 const SYS_LABELS = { auto: 'Авто', group: 'Групповая', playoff: 'Плей-офф', mixed: 'Смешанная' };
 
+// ============ ОНЛАЙН-СИНХРОНИЗАЦИЯ СУДЕЙ И ТРАНСЛЯЦИЯ ДЛЯ РОДИТЕЛЕЙ ============
+// Отдельный бэкенд (Cloudflare Worker + D1 + Durable Object) — судьи на разных
+// телефонах пишут счёт в одно место, организатор и родители видят это в
+// реальном времени по WebSocket. Полностью опционально: без публикации всё
+// работает как раньше, только в localStorage этого браузера.
+const SYNC_BACKEND_URL = 'https://ivory-falcon-377.higgsfield.app';
+
 const loadTournamentsIndex = () => {
   try {
     const raw = localStorage.getItem(TOURNAMENTS_INDEX_KEY);
@@ -990,6 +997,10 @@ export default function TournamentBuilder() {
   const [tournamentName, setTournamentName] = useState('Турнир');
   const [showDashboard, setShowDashboard] = useState(false);
 
+  // Онлайн-синхронизация: если турнир опубликован, тут лежит его id на бэкенде
+  const [onlineId, setOnlineId] = useState(null);
+  const [publishing, setPublishing] = useState(false);
+
   // Подставляет в состояние данные турнира с данным id (или пустой турнир, если данных ещё нет)
   const loadTournamentData = (id, list) => {
     const entry = (list || tournamentsIndex).find((t) => t.id === id);
@@ -1010,6 +1021,7 @@ export default function TournamentBuilder() {
     setMinRest(saved.minRest != null ? saved.minRest : 0);
     setBlockedSlots(saved.blockedSlots || []);
     setDayWindows(saved.dayWindows || {});
+    setOnlineId(saved.onlineId || null);
   };
 
   const createTournament = () => {
@@ -1062,7 +1074,7 @@ export default function TournamentBuilder() {
   useEffect(() => {
     if (!tournamentId) return; // ждём завершения начальной загрузки
     try {
-      localStorage.setItem(tournamentDataKey(tournamentId), JSON.stringify({ params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows }));
+      localStorage.setItem(tournamentDataKey(tournamentId), JSON.stringify({ params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, onlineId }));
       setTournamentsIndex((prev) => {
         const next = prev.map((t) => (t.id === tournamentId
           ? { ...t, name: tournamentName, savedAt: Date.now(), totalTeams: params.totalTeams, system: params.system }
@@ -1071,7 +1083,7 @@ export default function TournamentBuilder() {
         return next;
       });
     } catch (e) { console.error('save failed', e); }
-  }, [tournamentId, params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, tournamentName]);
+  }, [tournamentId, params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, tournamentName, onlineId]);
 
   const dayMin = timeToMin(params.endTime) - timeToMin(params.startTime);
   const availMin = Math.max(60, dayMin - 30);
@@ -1285,6 +1297,72 @@ export default function TournamentBuilder() {
     catch (e) { alert('Ошибка генерации: ' + e.message); console.error(e); }
   };
 
+  // Публикует/переопубликовывает турнир на бэкенде синхронизации — после этого
+  // QR судьи и ссылка для родителей ведут туда, а не в localStorage. Метки
+  // команд (t1Label/t2Label) считаются здесь один раз при публикации: бэкенд
+  // не знает, как резолвить победителей плей-офф — организатору нужно
+  // переопубликовать турнир после завершения раунда, чтобы обновить метки.
+  const publishOnline = async () => {
+    setPublishing(true);
+    try {
+      const publishMatches = matches.map((m) => ({
+        id: m.id,
+        label: m.phase === 'group' ? m.label : (m.roundName + (m.isBronze ? ' (бронза)' : '')),
+        t1Label: teamLabel(m, 't1'),
+        t2Label: teamLabel(m, 't2'),
+        phase: m.phase,
+        group: m.group,
+        roundName: m.roundName,
+        isBronze: m.isBronze,
+      }));
+      const payload = { name: tournamentName, params: eff, teamNames, teamColors, matches: publishMatches, structure };
+      const url = onlineId ? `${SYNC_BACKEND_URL}/api/tournaments/${onlineId}` : `${SYNC_BACKEND_URL}/api/tournaments`;
+      const res = await fetch(url, {
+        method: onlineId ? 'PUT' : 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json();
+      if (data.ok) setOnlineId(data.id || onlineId);
+      else alert('Не удалось опубликовать турнир: ' + (data.error || 'ошибка сервера'));
+    } catch (e) {
+      alert('Не удалось опубликовать турнир — проверьте интернет-соединение.');
+      console.error(e);
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  // Пока турнир онлайн — держим WebSocket к бэкенду, чтобы счёт от судей на
+  // других телефонах сразу применялся здесь (и попадал в обычный localStorage
+  // автосейв — офлайн-копия остаётся источником для xlsx/протокола).
+  useEffect(() => {
+    if (!onlineId) return;
+    const wsUrl = SYNC_BACKEND_URL.replace(/^http/, 'ws') + `/api/tournaments/${onlineId}/ws`;
+    const ws = new WebSocket(wsUrl);
+    ws.addEventListener('message', (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'score') {
+          setScores((prev) => ({ ...prev, [msg.matchId]: { a: msg.a, b: msg.b, events: msg.events || [] } }));
+        }
+      } catch (e) { console.error('ws message parse failed', e); }
+    });
+    return () => ws.close();
+  }, [onlineId]);
+
+  // Организатор тоже вводит счёт локально (в этом же приложении) — если турнир
+  // онлайн, отправляем и туда, чтобы судьи/родители видели изменения от
+  // организатора так же, как и наоборот. Fire-and-forget: не блокируем UI.
+  const syncScoreOnline = (matchId, a, b, events) => {
+    if (!onlineId) return;
+    fetch(`${SYNC_BACKEND_URL}/api/tournaments/${onlineId}/matches/${matchId}/score`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ a, b, events }),
+    }).catch((e) => console.error('online score sync failed', e));
+  };
+
   const sysLabel = (s) => ({ group: 'Групповая', playoff: 'Плей-офф', mixed: 'Смешанная' }[s] || s);
   const sysColor = (s) => ({ group: 'bg-[#f5f2ec] text-black border border-black/10', playoff: 'bg-[#e30613]/10 text-[#b1040f] border border-[#e30613]/25', mixed: 'bg-black text-white' }[s] || 'bg-[#f5f2ec]');
  const durStatus = slotDur < 25 ? 'tight' : slotDur > 70 ? 'loose' : 'ok';
@@ -1312,7 +1390,7 @@ export default function TournamentBuilder() {
       return <JudgeView matchLabel={m.phase === 'group' ? m.label : (m.roundName + (m.isBronze ? ' (бронза)' : ''))}
         t1Label={t1Label} t2Label={t2Label} color1={sid1 ? teamColors[sid1] : null} color2={sid2 ? teamColors[sid2] : null}
         existing={scores[m.id]}
-        onSave={(a, b, events) => setScores({ ...scores, [m.id]: { a, b, events } })} />;
+        onSave={(a, b, events) => { setScores({ ...scores, [m.id]: { a, b, events } }); syncScoreOnline(m.id, a, b, events); }} />;
     }
   }
 
@@ -1328,6 +1406,22 @@ export default function TournamentBuilder() {
  <div className="hidden sm:block h-6 w-px bg-black/15" />
  <div className="text-xs sm:text-sm text-neutral-500 font-medium hidden sm:block">Конструктор турниров</div>
  <div className="flex-1" />
+ {onlineId ? (
+   <div className="flex items-center gap-1.5 flex-shrink-0">
+     <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-600 hidden sm:inline">🟢 Онлайн</span>
+     <button onClick={() => { navigator.clipboard.writeText(`${SYNC_BACKEND_URL}/view/${onlineId}`); alert('Ссылка для родителей скопирована'); }}
+       className="px-2.5 py-1.5 text-xs font-bold text-neutral-600 hover:text-[#0c0c0c] border border-black/10 rounded-sm">👀 Родителям</button>
+     <button onClick={publishOnline} disabled={publishing}
+       className="px-2.5 py-1.5 text-xs font-bold text-neutral-600 hover:text-[#0c0c0c] border border-black/10 rounded-sm disabled:opacity-50" title="Обновить составы/сетку на сервере после нового раунда">
+       {publishing ? '…' : '↻ Обновить'}
+     </button>
+   </div>
+ ) : (
+   <button onClick={publishOnline} disabled={publishing}
+     className="px-2.5 py-1.5 text-xs font-bold text-white bg-[#e30613] hover:bg-[#b1040f] rounded-sm disabled:opacity-50 flex-shrink-0">
+     {publishing ? 'Публикация…' : '🌐 Опубликовать онлайн'}
+   </button>
+ )}
  <button onClick={() => setShowDashboard(true)} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold text-neutral-600 hover:text-[#0c0c0c] border border-black/10 rounded-sm flex-shrink-0">
    <span>📁</span><span className="max-w-[8rem] sm:max-w-[10rem] truncate">{tournamentName}</span>
  </button>
@@ -1639,7 +1733,7 @@ export default function TournamentBuilder() {
   modal={scoreModal}
   scores={scores}
   teamColors={teamColors}
-  onSave={(a, b, events) => { setScores({ ...scores, [scoreModal.matchId]: { a, b, events } }); setScoreModal(null); }}
+  onSave={(a, b, events) => { setScores({ ...scores, [scoreModal.matchId]: { a, b, events } }); syncScoreOnline(scoreModal.matchId, a, b, events); setScoreModal(null); }}
   onClear={() => { const s = { ...scores }; delete s[scoreModal.matchId]; setScores(s); setScoreModal(null); }}
   onClose={() => setScoreModal(null)}
  />
@@ -1647,7 +1741,9 @@ export default function TournamentBuilder() {
 
  {/* Модалка QR-кода судьи */}
  {qrModal && (
- <QRModal matchLabel={qrModal.matchLabel} matchId={qrModal.matchId} onClose={() => setQrModal(null)} />
+ <QRModal matchLabel={qrModal.matchLabel} matchId={qrModal.matchId}
+  judgeUrl={onlineId ? `${SYNC_BACKEND_URL}/judge/${onlineId}/${qrModal.matchId}` : null}
+  onClose={() => setQrModal(null)} />
  )}
 
  {/* Модалка печатного протокола */}
@@ -2073,8 +2169,8 @@ function ModalShell({ onClose, sheetClassName, children }) {
   );
 }
 
-function QRModal({ matchLabel, matchId, onClose }) {
-  const url = `${window.location.origin}${window.location.pathname}?judge=${matchId}`;
+function QRModal({ matchLabel, matchId, judgeUrl, onClose }) {
+  const url = judgeUrl || `${window.location.origin}${window.location.pathname}?judge=${matchId}`;
   const copyLink = () => {
     try { navigator.clipboard.writeText(url); alert('Ссылка скопирована'); }
     catch { alert(url); }
