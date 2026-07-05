@@ -1535,7 +1535,7 @@ export default function TournamentBuilder() {
 @media print {
   @page { size: A4; margin: 15mm; }
   body { background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  body > *:not(#root), #root > div > *:not(:has(#print-area)) { display: none !important; }
+  body:not(.protocol-printing) > *:not(#root), body:not(.protocol-printing) #root > div > *:not(:has(#print-area)) { display: none !important; }
   header, nav, .print\\:hidden { display: none !important; }
   #print-area { padding: 0 !important; margin: 0 !important; }
   .break-inside-avoid { break-inside: avoid; page-break-inside: avoid; }
