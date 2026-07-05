@@ -914,8 +914,44 @@ const slotToDay = (slotIdx, dayOffsets, slotsInDay) => {
   return { day: 1, local: slotIdx };
 };
 
+// ============ ХРАНЕНИЕ НЕСКОЛЬКИХ ТУРНИРОВ («личный кабинет» без сервера) ============
+// Список турниров — лёгкий индекс (имя, дата, кол-во команд) для отображения в
+// кабинете без загрузки полных данных каждого. Данные каждого турнира — отдельным
+// ключом, чтобы не читать/писать весь список турниров на каждое изменение счёта.
+const TOURNAMENTS_INDEX_KEY = 'msg_tournaments_index_v1';
+const LEGACY_STORAGE_KEY = 'msg_tournament_v1'; // старый формат — один турнир без ID
+const tournamentDataKey = (id) => `msg_tournament_data_v1:${id}`;
+const makeTournamentId = () => `t_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+const SYS_LABELS = { auto: 'Авто', group: 'Групповая', playoff: 'Плей-офф', mixed: 'Смешанная' };
+
+const loadTournamentsIndex = () => {
+  try {
+    const raw = localStorage.getItem(TOURNAMENTS_INDEX_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+};
+const saveTournamentsIndex = (list) => {
+  try { localStorage.setItem(TOURNAMENTS_INDEX_KEY, JSON.stringify(list)); } catch (e) { console.error('index save failed', e); }
+};
+// Разовая миграция: старые пользователи хранили ровно один турнир под фиксированным
+// ключом. При первом запуске новой версии переносим его в список как первую запись.
+const migrateLegacyTournament = () => {
+  let list = loadTournamentsIndex();
+  if (list.length > 0) return list;
+  try {
+    const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!raw) return list;
+    const data = JSON.parse(raw);
+    const id = makeTournamentId();
+    localStorage.setItem(tournamentDataKey(id), JSON.stringify(data));
+    list = [{ id, name: 'Турнир', savedAt: Date.now(), totalTeams: data.params?.totalTeams, system: data.params?.system }];
+    saveTournamentsIndex(list);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+  } catch (e) { console.error('migration failed', e); }
+  return list;
+};
+
 // ============ КОМПОНЕНТ ============
-const STORAGE_KEY = 'msg_tournament_v1';
 
 // Читаем параметр URL ?judge=matchId
 const getJudgeMatchId = () => {
@@ -948,31 +984,94 @@ export default function TournamentBuilder() {
   const [qrModal, setQrModal] = useState(null); // { matchId, matchLabel }
   const [protocolModal, setProtocolModal] = useState(null); // { matchId, matchLabel, t1Label, t2Label, sid1, sid2 }
 
-  // Загрузка из localStorage при монтировании
-  useEffect(() => {
+  // «Личный кабинет»: список турниров + какой сейчас открыт
+  const [tournamentsIndex, setTournamentsIndex] = useState([]);
+  const [tournamentId, setTournamentId] = useState(null);
+  const [tournamentName, setTournamentName] = useState('Турнир');
+  const [showDashboard, setShowDashboard] = useState(false);
+
+  // Подставляет в состояние данные турнира с данным id (или пустой турнир, если данных ещё нет)
+  const loadTournamentData = (id, list) => {
+    const entry = (list || tournamentsIndex).find((t) => t.id === id);
+    setTournamentId(id);
+    setTournamentName(entry ? entry.name : 'Турнир');
+    let saved = {};
     try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const saved = JSON.parse(raw);
-        if (saved.params) setParams(saved.params);
-        if (saved.teamNames) setTeamNames(saved.teamNames);
-        if (saved.teamColors) setTeamColors(saved.teamColors);
-        if (saved.scores) setScores(saved.scores);
-        if (saved.matchDurMode) setMatchDurMode(saved.matchDurMode);
-        if (saved.manualDur) setManualDur(saved.manualDur);
-        if (saved.fieldNames) setFieldNames(saved.fieldNames);
-        if (saved.minRest != null) setMinRest(saved.minRest);
-        if (saved.blockedSlots) setBlockedSlots(saved.blockedSlots);
-        if (saved.dayWindows) setDayWindows(saved.dayWindows);
-      }
-    } catch (e) { console.error('load failed', e); }
+      const raw = localStorage.getItem(tournamentDataKey(id));
+      if (raw) saved = JSON.parse(raw);
+    } catch (e) { console.error('load tournament failed', e); }
+    setParams(saved.params || { totalTeams: 20, fields: 2, startTime: '10:00', endTime: '20:00', system: 'auto', groupSize: 4, advance: 2, days: 1 });
+    setTeamNames(saved.teamNames || {});
+    setTeamColors(saved.teamColors || {});
+    setScores(saved.scores || {});
+    setMatchDurMode(saved.matchDurMode || 'auto');
+    setManualDur(saved.manualDur || 40);
+    setFieldNames(saved.fieldNames || {});
+    setMinRest(saved.minRest != null ? saved.minRest : 0);
+    setBlockedSlots(saved.blockedSlots || []);
+    setDayWindows(saved.dayWindows || {});
+  };
+
+  const createTournament = () => {
+    const id = makeTournamentId();
+    const entry = { id, name: `Турнир ${tournamentsIndex.length + 1}`, savedAt: Date.now(), totalTeams: 20, system: 'auto' };
+    const next = [...tournamentsIndex, entry];
+    setTournamentsIndex(next);
+    saveTournamentsIndex(next);
+    loadTournamentData(id, next);
+    setShowDashboard(false);
+    setTab('setup');
+  };
+  const openTournament = (id) => {
+    loadTournamentData(id, tournamentsIndex);
+    setShowDashboard(false);
+    setTab('setup');
+  };
+  const deleteTournament = (id) => {
+    if (!window.confirm('Удалить этот турнир без возможности восстановления?')) return;
+    const next = tournamentsIndex.filter((t) => t.id !== id);
+    setTournamentsIndex(next);
+    saveTournamentsIndex(next);
+    try { localStorage.removeItem(tournamentDataKey(id)); } catch (e) { console.error('delete failed', e); }
+    if (id === tournamentId) {
+      if (next.length > 0) loadTournamentData(next[next.length - 1].id, next);
+      else createTournament();
+    }
+  };
+  const renameTournament = (id, newName) => {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    const next = tournamentsIndex.map((t) => (t.id === id ? { ...t, name: trimmed } : t));
+    setTournamentsIndex(next);
+    saveTournamentsIndex(next);
+    if (id === tournamentId) setTournamentName(trimmed);
+  };
+
+  // Загрузка списка турниров при монтировании (с разовой миграцией старого формата)
+  useEffect(() => {
+    let list = migrateLegacyTournament();
+    if (list.length === 0) {
+      const id = makeTournamentId();
+      list = [{ id, name: 'Турнир 1', savedAt: Date.now(), totalTeams: 20, system: 'auto' }];
+      saveTournamentsIndex(list);
+    }
+    setTournamentsIndex(list);
+    loadTournamentData(list[list.length - 1].id, list);
   }, []);
-  // Сохранение при любом изменении данных
+  // Сохранение при любом изменении данных ТЕКУЩЕГО турнира
   useEffect(() => {
+    if (!tournamentId) return; // ждём завершения начальной загрузки
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows }));
+      localStorage.setItem(tournamentDataKey(tournamentId), JSON.stringify({ params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows }));
+      setTournamentsIndex((prev) => {
+        const next = prev.map((t) => (t.id === tournamentId
+          ? { ...t, name: tournamentName, savedAt: Date.now(), totalTeams: params.totalTeams, system: params.system }
+          : t));
+        saveTournamentsIndex(next);
+        return next;
+      });
     } catch (e) { console.error('save failed', e); }
-  }, [params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows]);
+  }, [tournamentId, params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, tournamentName]);
 
   const dayMin = timeToMin(params.endTime) - timeToMin(params.startTime);
   const availMin = Math.max(60, dayMin - 30);
@@ -1228,6 +1327,10 @@ export default function TournamentBuilder() {
  </div>
  <div className="hidden sm:block h-6 w-px bg-black/15" />
  <div className="text-xs sm:text-sm text-neutral-500 font-medium hidden sm:block">Конструктор турниров</div>
+ <div className="flex-1" />
+ <button onClick={() => setShowDashboard(true)} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold text-neutral-600 hover:text-[#0c0c0c] border border-black/10 rounded-sm flex-shrink-0">
+   <span>📁</span><span className="max-w-[8rem] sm:max-w-[10rem] truncate">{tournamentName}</span>
+ </button>
  </div>
  </div>
  <div className="max-w-6xl mx-auto p-3 sm:p-6">
@@ -1571,9 +1674,22 @@ export default function TournamentBuilder() {
   onClose={() => setImportModal(false)}
  />
  )}
+
+ {/* Личный кабинет: список турниров */}
+ {showDashboard && (
+ <TournamentsDashboard
+  tournaments={tournamentsIndex}
+  currentId={tournamentId}
+  onOpen={openTournament}
+  onCreate={createTournament}
+  onDelete={deleteTournament}
+  onRename={renameTournament}
+  onClose={() => setShowDashboard(false)}
+ />
+ )}
  </div>
  {/* Липкая кнопка «Скачать xlsx» — только на мобильном, скрывается когда открыта любая модалка */}
- {!scoreModal && !importModal && !qrModal && !protocolModal && (
+ {!scoreModal && !importModal && !qrModal && !protocolModal && !showDashboard && (
  <div className="lg:hidden fixed bottom-0 left-0 right-0 p-3 bg-white/95 backdrop-blur border-t border-black/10 z-40" style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}>
  <button onClick={handleDownload} className="w-full bg-[#e30613] active:bg-[#b1040f] text-white font-bold py-3.5 px-4 rounded flex items-center justify-center gap-2 text-base tracking-wide uppercase">
  <Download className="w-5 h-5" />Скачать xlsx
@@ -2267,6 +2383,60 @@ function ImportTeamsModal({ onImport, onClose }) {
           className="flex-[2] py-3 bg-[#e30613] active:bg-[#b1040f] disabled:bg-neutral-300 text-white font-black uppercase tracking-widest text-sm">
           Импортировать {preview.length}
         </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+// ============ ЛИЧНЫЙ КАБИНЕТ: СПИСОК ТУРНИРОВ ============
+// Хранится локально в этом браузере (localStorage) — без логина и сервера.
+function TournamentsDashboard({ tournaments, currentId, onOpen, onCreate, onDelete, onRename, onClose }) {
+  const [editingId, setEditingId] = useState(null);
+  const [editValue, setEditValue] = useState('');
+  const sorted = [...tournaments].sort((a, b) => (b.savedAt || 0) - (a.savedAt || 0));
+
+  const commitRename = () => {
+    onRename(editingId, editValue);
+    setEditingId(null);
+  };
+
+  return (
+    <ModalShell onClose={onClose} sheetClassName="sm:max-w-lg max-h-[85vh] flex flex-col">
+      <div className="px-4 py-3 border-b border-black/10 flex items-center justify-between">
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">Личный кабинет</div>
+          <div className="text-sm font-black">Мои турниры</div>
+        </div>
+        <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-neutral-400 hover:text-[#0c0c0c] text-xl">×</button>
+      </div>
+      <div className="flex-1 overflow-y-auto divide-y divide-black/5">
+        {sorted.length === 0 && (
+          <div className="p-6 text-center text-sm text-neutral-400">Пока нет сохранённых турниров</div>
+        )}
+        {sorted.map((t) => (
+          <div key={t.id} className={`p-3 flex items-center gap-2 ${t.id === currentId ? 'bg-[#f5f2ec]' : ''}`}>
+            {editingId === t.id ? (
+              <input autoFocus value={editValue} onChange={(e) => setEditValue(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={(e) => { if (e.key === 'Enter') commitRename(); if (e.key === 'Escape') setEditingId(null); }}
+                className="inp text-sm flex-1" />
+            ) : (
+              <button onClick={() => onOpen(t.id)} className="flex-1 text-left min-w-0">
+                <div className="font-bold text-sm truncate">{t.name}{t.id === currentId ? ' · открыт' : ''}</div>
+                <div className="text-[10px] text-neutral-500 mt-0.5">
+                  {t.totalTeams || '—'} команд · {SYS_LABELS[t.system] || t.system || '—'}{t.savedAt ? ` · ${new Date(t.savedAt).toLocaleDateString('ru-RU')}` : ''}
+                </div>
+              </button>
+            )}
+            <button onClick={() => { setEditingId(t.id); setEditValue(t.name); }}
+              className="w-8 h-8 flex-shrink-0 flex items-center justify-center text-neutral-400 hover:text-[#0c0c0c]" title="Переименовать">✎</button>
+            <button onClick={() => onDelete(t.id)}
+              className="w-8 h-8 flex-shrink-0 flex items-center justify-center text-neutral-400 hover:text-[#e30613]" title="Удалить">🗑</button>
+          </div>
+        ))}
+      </div>
+      <div className="p-4 border-t border-black/10">
+        <button onClick={onCreate} className="w-full py-3 bg-[#e30613] active:bg-[#b1040f] text-white font-bold uppercase tracking-widest text-xs">+ Новый турнир</button>
       </div>
     </ModalShell>
   );
