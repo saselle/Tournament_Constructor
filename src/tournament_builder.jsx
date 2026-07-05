@@ -295,7 +295,7 @@ const STYLES = {
 const setCell = (ws, addr, cell) => { ws[addr] = cell; };
 const styled = (cell, style) => ({ ...cell, s: style });
 
-const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames = {}) => {
+const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames = {}, varRows = []) => {
   const wb = XLSX.utils.book_new();
   const { system, totalTeams, fields, groupSize, advance, startTime } = params;
   const groups = (system === 'group' || system === 'mixed') ? splitIntoGroups(totalTeams, groupSize) : [];
@@ -748,6 +748,38 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
     wb.Sheets['Параметры'] = ws;
   }
 
+  // ===== ЛИСТ: VAR (зафиксированные в приложении эпизоды) =====
+  if (varRows.length > 0) {
+    const rows = [
+      [{ v: 'VAR / СОБЫТИЯ МАТЧЕЙ', s: STYLES.pageTitle }, '', '', '', ''],
+      [{ v: 'Эпизоды, зафиксированные в приложении при вводе счёта.', s: STYLES.instruction }, '', '', '', ''],
+      [],
+      [
+        { v: 'Матч', s: STYLES.tableHeader },
+        { v: 'Мин.', s: STYLES.tableHeader },
+        { v: 'Команда', s: STYLES.tableHeader },
+        { v: 'Событие', s: STYLES.tableHeader },
+        { v: 'Комментарий', s: STYLES.tableHeader },
+      ],
+    ];
+    varRows.forEach((e) => {
+      rows.push([
+        { v: e.matchLabel, s: STYLES.cellName },
+        { v: e.minute != null ? e.minute : '—', s: STYLES.cell },
+        { v: e.team, s: STYLES.cell },
+        { v: e.type, s: STYLES.cell },
+        { v: e.note || '—', s: STYLES.cell },
+      ]);
+    });
+    const ws = aoa(rows);
+    ws['!cols'] = [{ wch: 20 }, { wch: 6 }, { wch: 22 }, { wch: 26 }, { wch: 40 }];
+    ws['!merges'] = [
+      { s: { r: 0, c: 0 }, e: { r: 0, c: 4 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: 4 } },
+    ];
+    XLSX.utils.book_append_sheet(wb, ws, 'VAR');
+  }
+
   // КРИТИЧНО: заставляем Excel пересчитать все формулы при открытии файла.
   // xlsx-js-style не записывает calcPr, поэтому модифицируем XML вручную после генерации.
   const wbout = XLSX.write(wb, { bookType: 'xlsx', type: 'array', cellStyles: true });
@@ -1133,7 +1165,24 @@ export default function TournamentBuilder() {
   const finishTime = minToTime(finishMin);
 
   const handleDownload = () => {
-    try { generateXLSX(eff, structure, matches, schedule, slotDur, fieldNames); }
+    try {
+      const varRows = [];
+      matches.forEach((m) => {
+        const events = scores[m.id] && scores[m.id].events;
+        if (!events || !events.length) return;
+        const matchLabel = m.phase === 'group' ? m.label : (m.roundName + (m.isBronze ? ' (бронза)' : ''));
+        events.forEach((e) => {
+          varRows.push({
+            matchLabel,
+            minute: e.minute != null ? e.minute : null,
+            team: e.team === 'a' ? teamLabel(m, 't1') : e.team === 'b' ? teamLabel(m, 't2') : '—',
+            type: eventLabel(e.type),
+            note: e.note || '',
+          });
+        });
+      });
+      generateXLSX(eff, structure, matches, schedule, slotDur, fieldNames, varRows);
+    }
     catch (e) { alert('Ошибка генерации: ' + e.message); console.error(e); }
   };
 
@@ -1365,7 +1414,7 @@ export default function TournamentBuilder() {
  <div className="bg-white rounded border border-black/10 p-5">
  <h2 className="text-xs font-black text-[#0c0c0c] mb-4 uppercase tracking-widest">Структура</h2>
  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
- <Metric label="Система" value={sysLabel(actualSystem)} colorClass={sysColor(actualSystem)} />
+ <Metric label="Система" value={sysLabel(actualSystem)} colorClass={sysColor(actualSystem)} inverted={actualSystem === 'mixed'} />
  <Metric label="Матчей" value={matches.length} />
  <Metric label="Слотов" value={totalUsedSlots} />
  <Metric label="Слот" value={`${slotDur} мин`} warning={durStatus !== 'ok'} />
@@ -1569,8 +1618,7 @@ function BoundedNumber({ value, min, max, onCommit }) { const [raw, setRaw] = us
 function Field({ label, children }) {
  return (<div><label className="block text-[10px] font-bold uppercase tracking-widest text-neutral-500 mb-1.5">{label}</label>{children}</div>);
 }
-function Metric({ label, value, colorClass, warning }) {
- const inverted = (colorClass || '').includes('text-white');
+function Metric({ label, value, colorClass, warning, inverted }) {
  return (
  <div className={`p-3 border ${warning ? 'border-[#e30613]/40 bg-[#e30613]/5' : 'border-black/10 bg-[#f5f2ec]'} ${colorClass || ''}`}>
  <div className={`text-[10px] font-bold uppercase tracking-widest ${inverted ? 'text-neutral-300' : 'text-neutral-500'}`}>{label}</div>
@@ -1818,7 +1866,6 @@ function JudgeView({ matchLabel, t1Label, t2Label, color1, color2, existing, onS
   const [a, setA] = useState((existing && existing.a != null) ? existing.a : 0);
   const [b, setB] = useState((existing && existing.b != null) ? existing.b : 0);
   const [events, setEvents] = useState((existing && existing.events) || []);
-  const [showEvents, setShowEvents] = useState(false);
   const [saved, setSaved] = useState(false);
   const clamp = (v) => Math.max(0, Math.min(99, v));
   const handleSave = () => {
@@ -1863,17 +1910,9 @@ function JudgeView({ matchLabel, t1Label, t2Label, color1, color2, existing, onS
       </div>
 
       {/* VAR / события */}
-      <div className="border-t border-black/10">
-        <button onClick={() => setShowEvents(!showEvents)} className="w-full px-4 py-3 flex items-center justify-between text-xs font-bold uppercase tracking-widest text-neutral-500">
-          <span>🟨 VAR / События{events.length > 0 ? ` (${events.length})` : ''}</span>
-          <span>{showEvents ? '▲' : '▼'}</span>
-        </button>
-        {showEvents && (
-          <div className="px-4 pb-4">
-            <EventsEditor events={events} setEvents={setEvents} t1Label={t1Label} t2Label={t2Label} compact />
-          </div>
-        )}
-      </div>
+      <CollapsibleSection title={`VAR / События${events.length > 0 ? ` (${events.length})` : ''}`}>
+        <EventsEditor events={events} setEvents={setEvents} t1Label={t1Label} t2Label={t2Label} compact />
+      </CollapsibleSection>
 
       {/* Нижняя кнопка */}
       <div className="border-t border-black/10 p-4" style={{ paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}>
@@ -1906,6 +1945,18 @@ function QRCode({ text, size = 128 }) {
 }
 
 // ============ МОДАЛКА С QR-КОДОМ СУДЬИ ============
+// Общая раскладка модалок: полноэкранный оверлей + белый лист (bottom-sheet на мобильном,
+// центрированное окно от sm:). sheetClassName задаёт ширину/высоту конкретной модалки.
+function ModalShell({ onClose, sheetClassName, children }) {
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
+      <div className={`bg-white w-full sm:rounded ${sheetClassName || ''}`} onClick={(e) => e.stopPropagation()} style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 function QRModal({ matchLabel, matchId, onClose }) {
   const url = `${window.location.origin}${window.location.pathname}?judge=${matchId}`;
   const copyLink = () => {
@@ -1913,31 +1964,31 @@ function QRModal({ matchLabel, matchId, onClose }) {
     catch { alert(url); }
   };
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
-      <div className="bg-white w-full sm:max-w-sm sm:rounded" onClick={(e) => e.stopPropagation()} style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
-        <div className="px-4 py-3 border-b border-black/10 flex items-center justify-between">
-          <div>
-            <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">{matchLabel}</div>
-            <div className="text-sm font-black">QR для судьи</div>
-          </div>
-          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-neutral-400 hover:text-[#0c0c0c] text-xl">×</button>
+    <ModalShell onClose={onClose} sheetClassName="sm:max-w-sm">
+      <div className="px-4 py-3 border-b border-black/10 flex items-center justify-between">
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">{matchLabel}</div>
+          <div className="text-sm font-black">QR для судьи</div>
         </div>
-        <div className="p-6 flex flex-col items-center gap-4">
-          <div className="border-4 border-[#0c0c0c] p-3">
-            <QRCode text={url} size={220} />
-          </div>
-          <div className="text-xs text-center text-neutral-600 leading-tight">
-            Судья сканирует QR камерой телефона → сразу открывается ввод счёта только этого матча
-          </div>
-          <button onClick={copyLink} className="w-full py-3 bg-[#0c0c0c] text-white font-bold uppercase tracking-widest text-xs">📋 Копировать ссылку</button>
-        </div>
+        <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-neutral-400 hover:text-[#0c0c0c] text-xl">×</button>
       </div>
-    </div>
+      <div className="p-6 flex flex-col items-center gap-4">
+        <div className="border-4 border-[#0c0c0c] p-3">
+          <QRCode text={url} size={220} />
+        </div>
+        <div className="text-xs text-center text-neutral-600 leading-tight">
+          Судья сканирует QR камерой телефона → сразу открывается ввод счёта только этого матча
+        </div>
+        <button onClick={copyLink} className="w-full py-3 bg-[#0c0c0c] text-white font-bold uppercase tracking-widest text-xs">📋 Копировать ссылку</button>
+      </div>
+    </ModalShell>
   );
 }
 
 // ============ ПЕЧАТНЫЙ ПРОТОКОЛ МАТЧА (РФС-стиль) ============
-function ProtocolModal({ modal, scores, onClose }) {
+function ProtocolModal({ modal, scores, teamColors, onClose }) {
+  const c1 = teamColors && modal.sid1 && teamColors[modal.sid1];
+  const c2 = teamColors && modal.sid2 && teamColors[modal.sid2];
   useEffect(() => {
     document.body.classList.add('protocol-printing');
     return () => document.body.classList.remove('protocol-printing');
@@ -1948,20 +1999,19 @@ function ProtocolModal({ modal, scores, onClose }) {
   const today = new Date().toLocaleDateString('ru-RU', { year: 'numeric', month: 'long', day: 'numeric' });
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
-      <div className="bg-white w-full sm:max-w-2xl sm:rounded max-h-[92vh] overflow-y-auto" onClick={(e) => e.stopPropagation()} style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
-        <div className="px-4 py-3 border-b border-black/10 flex items-center justify-between print:hidden">
-          <div>
-            <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">{modal.matchLabel}</div>
-            <div className="text-sm font-black">Протокол матча</div>
-          </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => window.print()} className="px-3 py-1.5 bg-[#e30613] active:bg-[#b1040f] text-white text-xs font-bold uppercase tracking-widest">🖨 Печать</button>
-            <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-neutral-400 hover:text-[#0c0c0c] text-xl">×</button>
-          </div>
+    <ModalShell onClose={onClose} sheetClassName="sm:max-w-2xl max-h-[92vh] overflow-y-auto">
+      <div className="px-4 py-3 border-b border-black/10 flex items-center justify-between print:hidden">
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">{modal.matchLabel}</div>
+          <div className="text-sm font-black">Протокол матча</div>
         </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => window.print()} className="px-3 py-1.5 bg-[#e30613] active:bg-[#b1040f] text-white text-xs font-bold uppercase tracking-widest">🖨 Печать</button>
+          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-neutral-400 hover:text-[#0c0c0c] text-xl">×</button>
+        </div>
+      </div>
 
-        <div id="protocol-print-root" className="p-6 sm:p-8 text-[#0c0c0c]">
+      <div id="protocol-print-root" className="p-6 sm:p-8 text-[#0c0c0c]">
           <div className="text-center mb-6">
             <div className="text-[10px] font-bold tracking-widest text-[#e30613]">MITIN SPORT GROUP</div>
             <h2 className="text-xl font-black uppercase tracking-wide mt-1">Протокол матча</h2>
@@ -1975,9 +2025,15 @@ function ProtocolModal({ modal, scores, onClose }) {
           </div>
 
           <div className="grid grid-cols-3 items-center gap-3 mb-6 border-y-2 border-black py-4">
-            <div className="text-center font-black text-sm">{modal.t1Label}</div>
+            <div className="text-center">
+              {c1 && <div className="h-1.5 mx-auto mb-1.5 w-8" style={{ background: c1 }} />}
+              <div className="font-black text-sm">{modal.t1Label}</div>
+            </div>
             <div className="text-center text-4xl font-black tabular-nums">{played ? `${sc.a} : ${sc.b}` : '— : —'}</div>
-            <div className="text-center font-black text-sm">{modal.t2Label}</div>
+            <div className="text-center">
+              {c2 && <div className="h-1.5 mx-auto mb-1.5 w-8" style={{ background: c2 }} />}
+              <div className="font-black text-sm">{modal.t2Label}</div>
+            </div>
           </div>
 
           <div className="mb-6">
@@ -2017,10 +2073,9 @@ function ProtocolModal({ modal, scores, onClose }) {
             ))}
           </div>
 
-          <div className="text-center text-[10px] text-neutral-400 mt-8">Сформировано в приложении «Конструктор турниров» MITIN SPORT GROUP · {today}</div>
-        </div>
+        <div className="text-center text-[10px] text-neutral-400 mt-8">Сформировано в приложении «Конструктор турниров» MITIN SPORT GROUP · {today}</div>
       </div>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -2177,43 +2232,56 @@ function ResultsView({ groups, allStandings, matches, scores, teamColors, teamNa
 
 // ============ МОДАЛКА ИМПОРТА КОМАНД ============
 function ImportTeamsModal({ onImport, onClose }) {
+  const [text, setText] = useState('');
   const preview = text.split('\n').map((s) => s.trim()).filter((s) => s.length > 0);
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
-      <div className="bg-white w-full sm:max-w-md sm:rounded max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()} style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
-        <div className="px-4 py-3 border-b border-black/10 flex items-center justify-between">
-          <div>
-            <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">Список команд</div>
-            <div className="text-sm font-black">Импорт из текста</div>
-          </div>
-          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-neutral-400 hover:text-[#0c0c0c] text-xl">×</button>
+    <ModalShell onClose={onClose} sheetClassName="sm:max-w-md max-h-[90vh] flex flex-col">
+      <div className="px-4 py-3 border-b border-black/10 flex items-center justify-between">
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">Список команд</div>
+          <div className="text-sm font-black">Импорт из текста</div>
         </div>
-        <div className="p-4 flex-1 overflow-y-auto">
-          <div className="text-xs text-neutral-600 mb-2">Вставьте по одной команде на строку. Порядок = номер команды.</div>
-          <textarea value={text} onChange={(e) => setText(e.target.value)} rows={8} placeholder={"Тигры\nЛьвы\nОрлы\nВолки"}
-            className="inp w-full font-mono text-sm" style={{ resize: 'vertical' }} />
-          {preview.length > 0 && (
-            <div className="mt-3 text-xs">
-              <div className="font-bold text-[10px] uppercase tracking-widest text-neutral-500 mb-1">Будет добавлено: {preview.length}</div>
-              <div className="max-h-40 overflow-y-auto border border-black/10 divide-y divide-black/5">
-                {preview.map((name, i) => (
-                  <div key={i} className="flex items-center gap-2 p-2 bg-[#f5f2ec]">
-                    <div className="w-6 text-center text-[10px] font-black text-neutral-500">{i + 1}</div>
-                    <div className="font-medium truncate">{name}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-        <div className="p-4 pt-0 flex gap-2">
-          <button onClick={onClose} className="flex-1 py-3 bg-white border border-black/15 font-bold uppercase tracking-widest text-xs">Отмена</button>
-          <button onClick={() => onImport(preview)} disabled={preview.length === 0}
-            className="flex-[2] py-3 bg-[#e30613] active:bg-[#b1040f] disabled:bg-neutral-300 text-white font-black uppercase tracking-widest text-sm">
-            Импортировать {preview.length}
-          </button>
-        </div>
+        <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-neutral-400 hover:text-[#0c0c0c] text-xl">×</button>
       </div>
+      <div className="p-4 flex-1 overflow-y-auto">
+        <div className="text-xs text-neutral-600 mb-2">Вставьте по одной команде на строку. Порядок = номер команды.</div>
+        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={8} placeholder={"Тигры\nЛьвы\nОрлы\nВолки"}
+          className="inp w-full font-mono text-sm" style={{ resize: 'vertical' }} />
+        {preview.length > 0 && (
+          <div className="mt-3 text-xs">
+            <div className="font-bold text-[10px] uppercase tracking-widest text-neutral-500 mb-1">Будет добавлено: {preview.length}</div>
+            <div className="max-h-40 overflow-y-auto border border-black/10 divide-y divide-black/5">
+              {preview.map((name, i) => (
+                <div key={i} className="flex items-center gap-2 p-2 bg-[#f5f2ec]">
+                  <div className="w-6 text-center text-[10px] font-black text-neutral-500">{i + 1}</div>
+                  <div className="font-medium truncate">{name}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+      <div className="p-4 pt-0 flex gap-2">
+        <button onClick={onClose} className="flex-1 py-3 bg-white border border-black/15 font-bold uppercase tracking-widest text-xs">Отмена</button>
+        <button onClick={() => onImport(preview)} disabled={preview.length === 0}
+          className="flex-[2] py-3 bg-[#e30613] active:bg-[#b1040f] disabled:bg-neutral-300 text-white font-black uppercase tracking-widest text-sm">
+          Импортировать {preview.length}
+        </button>
+      </div>
+    </ModalShell>
+  );
+}
+
+// Раскрываемая секция — единое поведение сворачивания (используется и в JudgeView, и в ScoreModal)
+function CollapsibleSection({ title, children, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="border-t border-black/10">
+      <button onClick={() => setOpen(!open)} className="w-full px-4 py-3 flex items-center justify-between text-xs font-bold uppercase tracking-widest text-neutral-500">
+        <span>🟨 {title}</span>
+        <span>{open ? '▲' : '▼'}</span>
+      </button>
+      {open && <div className="px-4 pb-4">{children}</div>}
     </div>
   );
 }
@@ -2289,48 +2357,45 @@ function ScoreModal({ modal, scores, teamColors, onSave, onClear, onClose }) {
   const c2 = teamColors && modal.sid2 && teamColors[modal.sid2];
 
   return (
-    <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
-      <div className="bg-white w-full sm:max-w-md sm:rounded" onClick={(e) => e.stopPropagation()} style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
-        <div className="px-4 py-3 border-b border-black/10 flex items-center justify-between">
-          <div>
-            <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">{modal.matchLabel}</div>
-            <div className="text-sm font-black">Ввод счёта</div>
-          </div>
-          <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-neutral-400 hover:text-[#0c0c0c] text-xl">×</button>
+    <ModalShell onClose={onClose} sheetClassName="sm:max-w-md">
+      <div className="px-4 py-3 border-b border-black/10 flex items-center justify-between">
+        <div>
+          <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">{modal.matchLabel}</div>
+          <div className="text-sm font-black">Ввод счёта</div>
         </div>
-        <div className="p-4 grid grid-cols-2 gap-4">
-          {[
-            { label: modal.t1Label, val: a, set: setA, color: c1 },
-            { label: modal.t2Label, val: b, set: setB, color: c2 },
-          ].map((side, i) => (
-            <div key={i} className="text-center">
-              {side.color && <div className="h-1.5 mx-auto mb-2 w-8" style={{ background: side.color }} />}
-              <div className="text-xs font-bold mb-3 h-10 flex items-center justify-center leading-tight">{side.label}</div>
-              <div className="text-6xl font-black text-[#0c0c0c] mb-3 tabular-nums">{side.val}</div>
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={() => side.set(clamp(side.val - 1))} className="py-3 bg-[#f5f2ec] active:bg-black/10 font-black text-xl">−</button>
-                <button onClick={() => side.set(clamp(side.val + 1))} className="py-3 bg-[#e30613] active:bg-[#b1040f] text-white font-black text-xl">+</button>
-              </div>
-              <button onClick={() => side.set(0)} className="mt-2 text-[10px] font-bold uppercase tracking-widest text-neutral-400 hover:text-[#e30613]">Сбросить</button>
-            </div>
-          ))}
-        </div>
-        <div className="px-4 pb-4">
-          <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 mb-2">VAR / События матча</div>
-          <EventsEditor events={events} setEvents={setEvents} t1Label={modal.t1Label} t2Label={modal.t2Label} />
-        </div>
-        <div className="p-4 pt-0 flex gap-2">
-          {(existing.a != null) && (
-            <button onClick={onClear} className="flex-1 py-3 bg-white border border-black/15 text-[#0c0c0c] font-bold uppercase tracking-widest text-xs">
-              Удалить
-            </button>
-          )}
-          <button onClick={() => onSave(a, b, events)} className="flex-[2] py-3 bg-[#e30613] active:bg-[#b1040f] text-white font-black uppercase tracking-widest text-sm">
-            Сохранить {a}:{b}
-          </button>
-        </div>
+        <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-neutral-400 hover:text-[#0c0c0c] text-xl">×</button>
       </div>
-    </div>
+      <div className="p-4 grid grid-cols-2 gap-4">
+        {[
+          { label: modal.t1Label, val: a, set: setA, color: c1 },
+          { label: modal.t2Label, val: b, set: setB, color: c2 },
+        ].map((side, i) => (
+          <div key={i} className="text-center">
+            {side.color && <div className="h-1.5 mx-auto mb-2 w-8" style={{ background: side.color }} />}
+            <div className="text-xs font-bold mb-3 h-10 flex items-center justify-center leading-tight">{side.label}</div>
+            <div className="text-6xl font-black text-[#0c0c0c] mb-3 tabular-nums">{side.val}</div>
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={() => side.set(clamp(side.val - 1))} className="py-3 bg-[#f5f2ec] active:bg-black/10 font-black text-xl">−</button>
+              <button onClick={() => side.set(clamp(side.val + 1))} className="py-3 bg-[#e30613] active:bg-[#b1040f] text-white font-black text-xl">+</button>
+            </div>
+            <button onClick={() => side.set(0)} className="mt-2 text-[10px] font-bold uppercase tracking-widest text-neutral-400 hover:text-[#e30613]">Сбросить</button>
+          </div>
+        ))}
+      </div>
+      <CollapsibleSection title={`VAR / События${events.length > 0 ? ` (${events.length})` : ''}`} defaultOpen>
+        <EventsEditor events={events} setEvents={setEvents} t1Label={modal.t1Label} t2Label={modal.t2Label} />
+      </CollapsibleSection>
+      <div className="p-4 pt-0 flex gap-2">
+        {(existing.a != null) && (
+          <button onClick={onClear} className="flex-1 py-3 bg-white border border-black/15 text-[#0c0c0c] font-bold uppercase tracking-widest text-xs">
+            Удалить
+          </button>
+        )}
+        <button onClick={() => onSave(a, b, events)} className="flex-[2] py-3 bg-[#e30613] active:bg-[#b1040f] text-white font-black uppercase tracking-widest text-sm">
+          Сохранить {a}:{b}
+        </button>
+      </div>
+    </ModalShell>
   );
 }
 

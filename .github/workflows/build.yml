@@ -1,0 +1,44 @@
+name: Rebuild app bundle
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'scripts/inline-bundle.mjs'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install build dependencies
+        run: npm install --no-save esbuild react@18 react-dom@18 lucide-react qrcode-generator
+
+      - name: Build bundle
+        run: npm run build
+
+      - name: Inline bundle into index.html
+        run: node scripts/inline-bundle.mjs
+
+      - name: Commit updated index.html
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          if git diff --cached --quiet; then
+            echo "index.html unchanged, nothing to commit"
+          else
+            git commit -m "chore: rebuild index.html from src [skip ci]"
+            git push
+          fi
