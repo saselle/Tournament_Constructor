@@ -193,7 +193,7 @@ const buildMatches = (params) => {
       const sfStart = prevStart - 2; // позиция первого полуфинала
       matches.push({
         id: id++, phase: 'playoff', round: numRounds, isBronze: true,
-        roundName: '🥉 Бронза',
+        roundName: 'Бронза',
         loseFrom: [sfStart, sfStart + 1],
         t1: `Проигр.М${sfStart}`, t2: `Проигр.М${sfStart + 1}`,
         label: 'За 3-е место',
