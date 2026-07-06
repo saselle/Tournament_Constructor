@@ -784,8 +784,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
   // выпадающий список Excel, см. патч dataValidations в конце функции).
   // Слоты глобальные и сквозные; день = floor(slotIdx / slotsPerDay), время = startTime + localSlot*slotDur.
   let scheduleRefereeCols = [];
-  let scheduleFirstDataRow = null;
-  let scheduleLastDataRow = null;
+  let scheduleDataRows = [];
   {
     const slotMap = {};
     schedule.forEach((s) => {
@@ -838,8 +837,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
         slotInDayCounter = 0;
       }
       slotInDayCounter++;
-      if (scheduleFirstDataRow == null) scheduleFirstDataRow = R;
-      scheduleLastDataRow = R;
+      scheduleDataRows.push(R);
       const dayStartTime = (dInfos[day - 1] || dInfos[0]).startTime;
       const tStart = minToTime(timeToMin(dayStartTime) + localSlot * slotDur);
       const tEnd = minToTime(timeToMin(dayStartTime) + (localSlot + 1) * slotDur);
@@ -995,7 +993,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
   // что и calcPr выше): находим r:id листа «Расписание» в workbook.xml, по нему —
   // физический файл листа в workbook.xml.rels, и вставляем <dataValidations>.
   const refereeList = Object.values(refereeNamesMap).map((n) => String(n).replace(/[",]/g, ' ').trim()).filter(Boolean);
-  if (refereeList.length > 0 && scheduleRefereeCols.length > 0 && scheduleFirstDataRow != null) {
+  if (refereeList.length > 0 && scheduleRefereeCols.length > 0 && scheduleDataRows.length > 0) {
     const escXml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
     const listFormula = escXml(`"${refereeList.join(',')}"`);
     if (listFormula.length <= 255) {
@@ -1009,7 +1007,21 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
       const targetMatch = relTag && relTag.match(/Target="worksheets\/([^"]+)"/);
       const sheetFile = targetMatch && `xl/worksheets/${targetMatch[1]}`;
       if (sheetFile && zip[sheetFile]) {
-        const sqref = scheduleRefereeCols.map((c) => `${c}${scheduleFirstDataRow}:${c}${scheduleLastDataRow}`).join(' ');
+        // Строим диапазоны ТОЛЬКО по реальным строкам матчей — между ними могут
+        // быть строки-разделители дня, объединённые (merge) на всю ширину листа;
+        // если включить их в sqref, Excel сочтёт файл повреждённым (валидация
+        // ссылалась бы на не-якорную ячейку объединённого диапазона).
+        const rowRanges = [];
+        let segStart = scheduleDataRows[0], segEnd = scheduleDataRows[0];
+        for (let i = 1; i < scheduleDataRows.length; i++) {
+          const row = scheduleDataRows[i];
+          if (row === segEnd + 1) { segEnd = row; }
+          else { rowRanges.push([segStart, segEnd]); segStart = row; segEnd = row; }
+        }
+        rowRanges.push([segStart, segEnd]);
+        const sqref = scheduleRefereeCols
+          .flatMap((c) => rowRanges.map(([a, b]) => (a === b ? `${c}${a}` : `${c}${a}:${c}${b}`)))
+          .join(' ');
         const dataValidationsXml = `<dataValidations count="1"><dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1" sqref="${sqref}"><formula1>${listFormula}</formula1></dataValidation></dataValidations>`;
         const sheetXml = fflate.strFromU8(zip[sheetFile]);
         let patchedSheetXml;
