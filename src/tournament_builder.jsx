@@ -430,7 +430,15 @@ const STYLES = {
 const setCell = (ws, addr, cell) => { ws[addr] = cell; };
 const styled = (cell, style) => ({ ...cell, s: style });
 
-const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames = {}, varRows = []) => {
+const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames = {}, varRows = [], refereeInfo = null) => {
+  const refereeMode = refereeInfo?.mode || 'manual';
+  const refereeNamesMap = refereeInfo?.names || {};
+  const matchRefereesMap = refereeInfo?.byMatch || {};
+  const refereeLabelFor = (matchId) => {
+    const r = matchRefereesMap[matchId];
+    if (r == null || r === '') return null;
+    return refereeMode === 'manual' ? r : (refereeNamesMap[r] || null);
+  };
   const wb = XLSX.utils.book_new();
   const { system, totalTeams, fields, groupSize, advance, startTime, drawOrder } = params;
   const hasGroups = system === 'group' || system === 'mixed' || system === 'mixed-full' || system === 'mixed-goldsilver' || system === 'mixed-goldsilver-full';
@@ -454,7 +462,6 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
       [],
       [
         { v: '№', s: STYLES.tableHeader },
-        { v: 'Сид', s: STYLES.tableHeader },
         { v: 'Команда', s: STYLES.tableHeader },
         ...(numGroups > 0 ? [{ v: 'Группа', s: STYLES.tableHeader }, { v: 'Позиция', s: STYLES.tableHeader }] : []),
       ],
@@ -464,7 +471,6 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
     for (let s = 1; s <= totalTeams; s++) {
       const row = [
         { v: s, s: STYLES.cell },
-        { v: `Сид ${s}`, s: STYLES.cellSeed },
         { v: `Команда ${s}`, s: STYLES.cellInput },
       ];
       // Подсказка куда попадёт команда
@@ -487,16 +493,15 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
       }
       rows.push(row);
       const rowNum = rows.length; // текущий номер строки = индекс
-      teamNameRef[s] = `'Команды'!$C$${rowNum}`;
+      teamNameRef[s] = `'Команды'!$B$${rowNum}`;
     }
     const ws = aoa(rows);
-    ws['!cols'] = [{ wch: 6 }, { wch: 10 }, { wch: 28 }, ...(numGroups > 0 ? [{ wch: 12 }, { wch: 10 }] : [])];
+    ws['!cols'] = [{ wch: 6 }, { wch: 28 }, ...(numGroups > 0 ? [{ wch: 12 }, { wch: 10 }] : [])];
     ws['!rows'] = [{ hpt: 28 }, { hpt: 38 }];
     // merge title across all columns
-    const lastCol = numGroups > 0 ? 'E' : 'C';
     ws['!merges'] = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: numGroups > 0 ? 4 : 2 } },
-      { s: { r: 1, c: 0 }, e: { r: 1, c: numGroups > 0 ? 4 : 2 } },
+      { s: { r: 0, c: 0 }, e: { r: 0, c: numGroups > 0 ? 3 : 1 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: numGroups > 0 ? 3 : 1 } },
     ];
     XLSX.utils.book_append_sheet(wb, ws, 'Команды');
   }
@@ -830,7 +835,9 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
         }
         const label = m.label;
         const isPo = m.phase === 'playoff';
-        const f1 = `"${label}: " & IF(${t1Ref}="","?",${t1Ref}) & " — " & IF(${t2Ref}="","?",${t2Ref})`;
+        const refName = refereeLabelFor(m.id);
+        const refSuffix = refName ? ` & " · Судья: ${refName.replace(/"/g, "'")}"` : '';
+        const f1 = `"${label}: " & IF(${t1Ref}="","?",${t1Ref}) & " — " & IF(${t2Ref}="","?",${t2Ref})${refSuffix}`;
         setCell(ws, addr, { f: f1, s: isPo ? { ...STYLES.cell, fill: { fgColor: { rgb: 'FCE1E3' } }, font: { bold: true, color: { rgb: 'B1040F' } } } : STYLES.cell });
       }
       R++;
@@ -1507,7 +1514,7 @@ export default function TournamentBuilder() {
           });
         });
       });
-      generateXLSX(eff, structure, matches, schedule, slotDur, fieldNames, varRows);
+      generateXLSX(eff, structure, matches, schedule, slotDur, fieldNames, varRows, { mode: params.refereeMode || 'manual', names: refereeNames, byMatch: matchReferees });
     }
     catch (e) { alert('Ошибка генерации: ' + e.message); console.error(e); }
   };
@@ -2057,6 +2064,9 @@ export default function TournamentBuilder() {
   setImportModal={setImportModal}
   setQrModal={setQrModal}
   setProtocolModal={setProtocolModal}
+  refereeMode={params.refereeMode || 'manual'}
+  refereeNames={refereeNames}
+  matchReferees={matchReferees}
  />
  )}
 
@@ -2202,7 +2212,12 @@ function Metric({ label, value, colorClass, warning, inverted }) {
 
 // Один блок плей-офф (заголовок + список матчей) — переиспользуется и для одиночной
 // сетки, и для золотой/серебряной (тогда рендерится дважды с разным заголовком/списком).
-function PlayoffBracketBlock({ title, poMatches, scores, teamColors, teamLabel, resolveSlot, setScoreModal, setProtocolModal, setQrModal }) {
+function PlayoffBracketBlock({ title, poMatches, scores, teamColors, teamLabel, resolveSlot, setScoreModal, setProtocolModal, setQrModal, refereeMode, refereeNames, matchReferees }) {
+  const refereeLabel = (matchId) => {
+    const r = (matchReferees || {})[matchId];
+    if (r == null || r === '') return null;
+    return refereeMode === 'manual' ? r : ((refereeNames || {})[r] || null);
+  };
   return (
     <div className="bg-white border border-black/10">
       <div className="px-4 py-3 bg-[#e30613] text-white flex items-baseline justify-between">
@@ -2221,23 +2236,28 @@ function PlayoffBracketBlock({ title, poMatches, scores, teamColors, teamLabel, 
           return (
             <div key={m.id} className="flex items-stretch hover:bg-[#f5f2ec] transition">
               <button onClick={() => setScoreModal({ matchId: m.id, sid1: sd1, sid2: sd2, t1Label: t1, t2Label: t2, matchLabel: m.roundName + (m.isBronze ? ' (бронза)' : '') })}
-                className="flex-1 flex items-center gap-2 sm:gap-3 p-3 text-left min-w-0">
-                <div className="text-[10px] font-bold uppercase text-neutral-400 tracking-wider w-16 sm:w-20 flex-shrink-0">{m.roundName}{m.isBronze ? ' 🥉' : m.roundName === 'Финал' ? ' 🏆' : ''}</div>
-                <div className="flex-1 flex items-center justify-between gap-3 min-w-0">
-                  <span className={`text-sm font-medium truncate flex items-center gap-1.5 ${played && sc.a > sc.b ? 'font-black text-[#0c0c0c]' : played && sc.a < sc.b ? 'text-neutral-500' : ''}`}>
-                    {sd1 && teamColors[sd1] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd1] }} />}
-                    <span className="truncate">{t1}</span>
-                  </span>
-                  {played ? (
-                    <span className="font-black text-base sm:text-lg tracking-tight flex-shrink-0">{sc.a}:{sc.b}</span>
-                  ) : (
-                    <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 flex-shrink-0">–:–</span>
-                  )}
-                  <span className={`text-sm font-medium truncate text-right flex items-center gap-1.5 justify-end ${played && sc.b > sc.a ? 'font-black text-[#0c0c0c]' : played && sc.b < sc.a ? 'text-neutral-500' : ''}`}>
-                    <span className="truncate">{t2}</span>
-                    {sd2 && teamColors[sd2] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd2] }} />}
-                  </span>
+                className="flex-1 flex flex-col p-3 text-left min-w-0">
+                <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+                  <div className="text-[10px] font-bold uppercase text-neutral-400 tracking-wider w-16 sm:w-20 flex-shrink-0">{m.roundName}{m.isBronze ? ' 🥉' : m.roundName === 'Финал' ? ' 🏆' : ''}</div>
+                  <div className="flex-1 flex items-center justify-between gap-3 min-w-0">
+                    <span className={`text-sm font-medium truncate flex items-center gap-1.5 ${played && sc.a > sc.b ? 'font-black text-[#0c0c0c]' : played && sc.a < sc.b ? 'text-neutral-500' : ''}`}>
+                      {sd1 && teamColors[sd1] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd1] }} />}
+                      <span className="truncate">{t1}</span>
+                    </span>
+                    {played ? (
+                      <span className="font-black text-base sm:text-lg tracking-tight flex-shrink-0">{sc.a}:{sc.b}</span>
+                    ) : (
+                      <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 flex-shrink-0">–:–</span>
+                    )}
+                    <span className={`text-sm font-medium truncate text-right flex items-center gap-1.5 justify-end ${played && sc.b > sc.a ? 'font-black text-[#0c0c0c]' : played && sc.b < sc.a ? 'text-neutral-500' : ''}`}>
+                      <span className="truncate">{t2}</span>
+                      {sd2 && teamColors[sd2] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd2] }} />}
+                    </span>
+                  </div>
                 </div>
+                {refereeLabel(m.id) && (
+                  <div className="text-[10px] text-neutral-400 mt-1 pl-[4.75rem] sm:pl-24 truncate">👤 {refereeLabel(m.id)}</div>
+                )}
               </button>
               <button onClick={() => setProtocolModal({ matchId: m.id, matchLabel: m.roundName + (m.isBronze ? ' (бронза)' : ''), t1Label: t1, t2Label: t2, sid1, sid2 })}
                 className="w-11 flex items-center justify-center text-neutral-400 hover:text-[#e30613] border-l border-black/5" title="Печатный протокол">
@@ -2256,8 +2276,14 @@ function PlayoffBracketBlock({ title, poMatches, scores, teamColors, teamLabel, 
 }
 
 // ============ ЭКРАН «ТУРНИР» ============
-function TournamentView({ groups, matches, scores, setScores, teamNames, setTeamNames, teamColors, setTeamColors, teamName, teamLabel, resolveSlot, allStandings, actualSystem, setScoreModal, setImportModal, setQrModal, setProtocolModal }) {
+function TournamentView({ groups, matches, scores, setScores, teamNames, setTeamNames, teamColors, setTeamColors, teamName, teamLabel, resolveSlot, allStandings, actualSystem, setScoreModal, setImportModal, setQrModal, setProtocolModal, refereeMode, refereeNames, matchReferees }) {
   const [editingTeams, setEditingTeams] = useState(false);
+  // Имя судьи матча (текст в manual-режиме или lookup по roster в остальных)
+  const refereeLabel = (matchId) => {
+    const r = (matchReferees || {})[matchId];
+    if (r == null || r === '') return null;
+    return refereeMode === 'manual' ? r : ((refereeNames || {})[r] || null);
+  };
   const totalMatches = matches.length;
   const playedMatches = matches.filter((m) => {
     const s = scores[m.id];
@@ -2385,23 +2411,28 @@ function TournamentView({ groups, matches, scores, setScores, teamNames, setTeam
                 return (
                   <div key={m.id} className="flex items-stretch hover:bg-[#f5f2ec] transition">
                     <button onClick={() => setScoreModal({ matchId: m.id, sid1: sd1, sid2: sd2, t1Label: teamLabel(m, 't1'), t2Label: teamLabel(m, 't2'), matchLabel: m.label })}
-                      className="flex-1 flex items-center gap-2 sm:gap-3 p-3 text-left min-w-0">
-                      <div className="text-[10px] font-bold uppercase text-neutral-400 tracking-wider w-14 sm:w-16 flex-shrink-0">{m.label.replace(`Гр.${gi + 1} `, '')}</div>
-                      <div className="flex-1 flex items-center justify-between gap-3 min-w-0">
-                        <span className={`text-sm font-medium truncate flex items-center gap-1.5 ${played && sc.a > sc.b ? 'font-black text-[#0c0c0c]' : played && sc.a < sc.b ? 'text-neutral-500' : ''}`}>
-                          {teamColors[sd1] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd1] }} />}
-                          <span className="truncate">{teamLabel(m, 't1')}</span>
-                        </span>
-                        {played ? (
-                          <span className="font-black text-base sm:text-lg tracking-tight flex-shrink-0">{sc.a}:{sc.b}</span>
-                        ) : (
-                          <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 flex-shrink-0">–:–</span>
-                        )}
-                        <span className={`text-sm font-medium truncate text-right flex items-center gap-1.5 justify-end ${played && sc.b > sc.a ? 'font-black text-[#0c0c0c]' : played && sc.b < sc.a ? 'text-neutral-500' : ''}`}>
-                          <span className="truncate">{teamLabel(m, 't2')}</span>
-                          {teamColors[sd2] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd2] }} />}
-                        </span>
+                      className="flex-1 flex flex-col p-3 text-left min-w-0">
+                      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+                        <div className="text-[10px] font-bold uppercase text-neutral-400 tracking-wider w-14 sm:w-16 flex-shrink-0">{m.label.replace(`Гр.${gi + 1} `, '')}</div>
+                        <div className="flex-1 flex items-center justify-between gap-3 min-w-0">
+                          <span className={`text-sm font-medium truncate flex items-center gap-1.5 ${played && sc.a > sc.b ? 'font-black text-[#0c0c0c]' : played && sc.a < sc.b ? 'text-neutral-500' : ''}`}>
+                            {teamColors[sd1] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd1] }} />}
+                            <span className="truncate">{teamLabel(m, 't1')}</span>
+                          </span>
+                          {played ? (
+                            <span className="font-black text-base sm:text-lg tracking-tight flex-shrink-0">{sc.a}:{sc.b}</span>
+                          ) : (
+                            <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 flex-shrink-0">–:–</span>
+                          )}
+                          <span className={`text-sm font-medium truncate text-right flex items-center gap-1.5 justify-end ${played && sc.b > sc.a ? 'font-black text-[#0c0c0c]' : played && sc.b < sc.a ? 'text-neutral-500' : ''}`}>
+                            <span className="truncate">{teamLabel(m, 't2')}</span>
+                            {teamColors[sd2] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd2] }} />}
+                          </span>
+                        </div>
                       </div>
+                      {refereeLabel(m.id) && (
+                        <div className="text-[10px] text-neutral-400 mt-1 pl-16 sm:pl-[4.5rem] truncate">👤 {refereeLabel(m.id)}</div>
+                      )}
                     </button>
                     <button onClick={() => setProtocolModal({ matchId: m.id, matchLabel: m.label, t1Label: teamLabel(m, 't1'), t2Label: teamLabel(m, 't2'), sid1: sd1, sid2: sd2 })}
                       className="w-11 flex items-center justify-center text-neutral-400 hover:text-[#e30613] border-l border-black/5" title="Печатный протокол">
@@ -2427,12 +2458,14 @@ function TournamentView({ groups, matches, scores, setScores, teamNames, setTeam
           return (
             <PlayoffBracketBlock key={bracketKey} title={bracketKey === 'gold' ? '🥇 Золотой плей-офф' : '🥈 Серебряный плей-офф'}
               poMatches={bMatches} scores={scores} teamColors={teamColors} teamLabel={teamLabel} resolveSlot={resolveSlot}
-              setScoreModal={setScoreModal} setProtocolModal={setProtocolModal} setQrModal={setQrModal} />
+              setScoreModal={setScoreModal} setProtocolModal={setProtocolModal} setQrModal={setQrModal}
+              refereeMode={refereeMode} refereeNames={refereeNames} matchReferees={matchReferees} />
           );
         })
       ) : poMatches.length > 0 && (
         <PlayoffBracketBlock title="🏆 Плей-офф" poMatches={poMatches} scores={scores} teamColors={teamColors} teamLabel={teamLabel}
-          resolveSlot={resolveSlot} setScoreModal={setScoreModal} setProtocolModal={setProtocolModal} setQrModal={setQrModal} />
+          resolveSlot={resolveSlot} setScoreModal={setScoreModal} setProtocolModal={setProtocolModal} setQrModal={setQrModal}
+          refereeMode={refereeMode} refereeNames={refereeNames} matchReferees={matchReferees} />
       )}
 
       {/* Сброс */}
