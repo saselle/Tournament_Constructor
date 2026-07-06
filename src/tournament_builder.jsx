@@ -1154,6 +1154,7 @@ export default function TournamentBuilder() {
     system: 'auto', groupSize: 4, advance: 2, days: 1,
     scheduleMode: 'sequential', restMode: 'auto', maxGamesPerDay: null,
     drawMode: 'sequential', numSeeds: 4,
+    refereeMode: 'manual',
   });
   const [matchDurMode, setMatchDurMode] = useState('auto');
   const [manualDur, setManualDur] = useState(40);
@@ -1167,6 +1168,8 @@ export default function TournamentBuilder() {
   const [blockedSlots, setBlockedSlots] = useState([]); // [{ day, slotStart, slotEnd, label }]
   const [dayWindows, setDayWindows] = useState({}); // { 2: { startTime: "09:00", endTime: "18:00" } }
   const [drawOrder, setDrawOrder] = useState(null); // результат жеребьёвки: массив sid, null = ещё не проводили (последовательно)
+  const [refereeNames, setRefereeNames] = useState({}); // список судей: { 1: "Иванов И.И." }
+  const [matchReferees, setMatchReferees] = useState({}); // { matchId: refId (fromList/random) | "имя" (manual) }
   const [tab, setTab] = useState('setup');
   const [scoreModal, setScoreModal] = useState(null);
   const [importModal, setImportModal] = useState(false);
@@ -1198,6 +1201,7 @@ export default function TournamentBuilder() {
       system: 'auto', groupSize: 4, advance: 2, days: 1,
       scheduleMode: 'sequential', restMode: 'auto', maxGamesPerDay: null,
     drawMode: 'sequential', numSeeds: 4,
+    refereeMode: 'manual',
       ...(saved.params || {}),
     });
     setTeamNames(saved.teamNames || {});
@@ -1210,6 +1214,8 @@ export default function TournamentBuilder() {
     setBlockedSlots(saved.blockedSlots || []);
     setDayWindows(saved.dayWindows || {});
     setDrawOrder(saved.drawOrder || null);
+    setRefereeNames(saved.refereeNames || {});
+    setMatchReferees(saved.matchReferees || {});
     setOnlineId(saved.onlineId || null);
   };
 
@@ -1263,7 +1269,7 @@ export default function TournamentBuilder() {
   useEffect(() => {
     if (!tournamentId) return; // ждём завершения начальной загрузки
     try {
-      localStorage.setItem(tournamentDataKey(tournamentId), JSON.stringify({ params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, drawOrder, onlineId }));
+      localStorage.setItem(tournamentDataKey(tournamentId), JSON.stringify({ params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, drawOrder, refereeNames, matchReferees, onlineId }));
       setTournamentsIndex((prev) => {
         const next = prev.map((t) => (t.id === tournamentId
           ? { ...t, name: tournamentName, savedAt: Date.now(), totalTeams: params.totalTeams, system: params.system }
@@ -1272,7 +1278,7 @@ export default function TournamentBuilder() {
         return next;
       });
     } catch (e) { console.error('save failed', e); }
-  }, [tournamentId, params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, drawOrder, tournamentName, onlineId]);
+  }, [tournamentId, params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, drawOrder, refereeNames, matchReferees, tournamentName, onlineId]);
 
   const dayMin = timeToMin(params.endTime) - timeToMin(params.startTime);
   const availMin = Math.max(60, dayMin - 30);
@@ -1871,6 +1877,57 @@ export default function TournamentBuilder() {
      </button>
     </div>
    </div>
+   <div>
+    <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 mb-1.5">Судьи</div>
+    <select value={params.refereeMode || 'manual'} onChange={(e) => setParams({ ...params, refereeMode: e.target.value })} className="inp text-sm mb-2">
+     <option value="manual">Вручную (текст у матча)</option>
+     <option value="fromList">Из списка</option>
+     <option value="randomFromList">Рандомно из списка</option>
+    </select>
+    {(params.refereeMode || 'manual') !== 'manual' && (
+     <div className="space-y-1.5">
+      {Object.keys(refereeNames).map(Number).sort((a, b) => a - b).map((rid) => (
+       <div key={rid} className="flex items-center gap-1.5">
+        <input type="text" defaultValue={refereeNames[rid]} placeholder="Имя судьи"
+         onBlur={(e) => {
+          const v = e.target.value.trim();
+          const next = { ...refereeNames };
+          if (v) next[rid] = v; else delete next[rid];
+          setRefereeNames(next);
+         }}
+         className="inp text-sm flex-1" />
+        <button onClick={() => { const next = { ...refereeNames }; delete next[rid]; setRefereeNames(next); }}
+         className="w-8 h-8 flex-shrink-0 text-neutral-400 hover:text-[#e30613]">×</button>
+       </div>
+      ))}
+      <button onClick={() => {
+        const ids = Object.keys(refereeNames).map(Number);
+        const nextId = (ids.length ? Math.max(...ids) : 0) + 1;
+        setRefereeNames({ ...refereeNames, [nextId]: '' });
+       }}
+       className="w-full py-2 text-[10px] font-bold uppercase tracking-widest border border-dashed border-black/20 text-neutral-500 hover:border-[#e30613] hover:text-[#e30613]">
+       + Добавить судью
+      </button>
+      {(params.refereeMode || 'manual') === 'randomFromList' && (
+       <button onClick={() => {
+         const refIds = Object.keys(refereeNames).map(Number);
+         if (refIds.length === 0) { alert('Сначала добавьте судей в список'); return; }
+         const bySlot = {};
+         schedule.forEach((s) => { (bySlot[s.slotIdx] = bySlot[s.slotIdx] || []).push(s.matchId); });
+         const next = {};
+         Object.keys(bySlot).forEach((slotIdx) => {
+          const pool = shuffleArr(refIds);
+          bySlot[slotIdx].forEach((mid, i) => { next[mid] = pool[i % pool.length]; });
+         });
+         setMatchReferees(next);
+        }}
+        className="w-full py-2 mt-1 text-xs font-bold uppercase tracking-widest text-white bg-[#e30613] hover:bg-[#b1040f]">
+        🎲 Назначить судей
+       </button>
+      )}
+     </div>
+    )}
+   </div>
   </div>
  </div>
 
@@ -2006,6 +2063,10 @@ export default function TournamentBuilder() {
   modal={scoreModal}
   scores={scores}
   teamColors={teamColors}
+  refereeMode={params.refereeMode || 'manual'}
+  refereeNames={refereeNames}
+  referee={matchReferees[scoreModal.matchId]}
+  onRefereeChange={(v) => setMatchReferees({ ...matchReferees, [scoreModal.matchId]: v })}
   onSave={(a, b, events) => { setScores({ ...scores, [scoreModal.matchId]: { a, b, events } }); syncScoreOnline(scoreModal.matchId, a, b, events); setScoreModal(null); }}
   onClear={() => { const s = { ...scores }; delete s[scoreModal.matchId]; setScores(s); setScoreModal(null); }}
   onClose={() => setScoreModal(null)}
@@ -2025,6 +2086,9 @@ export default function TournamentBuilder() {
   modal={protocolModal}
   scores={scores}
   teamColors={teamColors}
+  refereeMode={params.refereeMode || 'manual'}
+  refereeNames={refereeNames}
+  referee={matchReferees[protocolModal.matchId]}
   onClose={() => setProtocolModal(null)}
  />
  )}
@@ -2490,9 +2554,12 @@ function QRModal({ matchLabel, matchId, judgeUrl, onClose }) {
 }
 
 // ============ ПЕЧАТНЫЙ ПРОТОКОЛ МАТЧА (РФС-стиль) ============
-function ProtocolModal({ modal, scores, teamColors, onClose }) {
+function ProtocolModal({ modal, scores, teamColors, refereeMode, refereeNames, referee, onClose }) {
   const c1 = teamColors && modal.sid1 && teamColors[modal.sid1];
   const c2 = teamColors && modal.sid2 && teamColors[modal.sid2];
+  const refereeDisplayName = referee == null || referee === ''
+    ? null
+    : (refereeMode === 'manual' ? referee : ((refereeNames || {})[referee] || null));
   useEffect(() => {
     document.body.classList.add('protocol-printing');
     return () => document.body.classList.remove('protocol-printing');
@@ -2569,7 +2636,7 @@ function ProtocolModal({ modal, scores, teamColors, onClose }) {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 text-xs mt-10">
-            {[{ role: 'Главный судья', name: null }, { role: 'Представитель команды', name: modal.t1Label }, { role: 'Представитель команды', name: modal.t2Label }].map((p, i) => (
+            {[{ role: 'Главный судья', name: refereeDisplayName }, { role: 'Представитель команды', name: modal.t1Label }, { role: 'Представитель команды', name: modal.t2Label }].map((p, i) => (
               <div key={i}>
                 <div className="text-neutral-500 mb-6">{p.role}{p.name ? `: ${p.name}` : ''}</div>
                 <div className="border-t border-black pt-1">ФИО, подпись</div>
@@ -2906,7 +2973,7 @@ function EventsEditor({ events, setEvents, t1Label, t2Label, compact }) {
   );
 }
 
-function ScoreModal({ modal, scores, teamColors, onSave, onClear, onClose }) {
+function ScoreModal({ modal, scores, teamColors, refereeMode, refereeNames, referee, onRefereeChange, onSave, onClear, onClose }) {
   const existing = scores[modal.matchId] || {};
   const [a, setA] = useState(existing.a != null ? existing.a : 0);
   const [b, setB] = useState(existing.b != null ? existing.b : 0);
@@ -2944,6 +3011,22 @@ function ScoreModal({ modal, scores, teamColors, onSave, onClear, onClose }) {
       <CollapsibleSection title={`VAR / События${events.length > 0 ? ` (${events.length})` : ''}`} defaultOpen>
         <EventsEditor events={events} setEvents={setEvents} t1Label={modal.t1Label} t2Label={modal.t2Label} />
       </CollapsibleSection>
+      {onRefereeChange && (
+        <div className="px-4 pb-4">
+          <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 mb-1.5">Судья</div>
+          {refereeMode === 'manual' ? (
+            <input type="text" defaultValue={referee || ''} placeholder="Имя судьи"
+              onBlur={(e) => onRefereeChange(e.target.value.trim() || null)} className="inp text-sm" />
+          ) : (
+            <select value={referee || ''} onChange={(e) => onRefereeChange(e.target.value ? +e.target.value : null)} className="inp text-sm">
+              <option value="">— не назначен —</option>
+              {Object.keys(refereeNames || {}).map(Number).sort((a, b) => a - b).map((rid) => (
+                <option key={rid} value={rid}>{refereeNames[rid] || `Судья ${rid}`}</option>
+              ))}
+            </select>
+          )}
+        </div>
+      )}
       <div className="p-4 pt-0 flex gap-2">
         {(existing.a != null) && (
           <button onClick={onClear} className="flex-1 py-3 bg-white border border-black/15 text-[#0c0c0c] font-bold uppercase tracking-widest text-xs">
