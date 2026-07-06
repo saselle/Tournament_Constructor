@@ -73,6 +73,18 @@ const shuffleArr = (arr) => {
   return a;
 };
 
+// Судья матча может быть либо id из справочника (режимы fromList/random, и теперь
+// назначение из таблицы «Расписание»), либо свободным текстом (режим manual) —
+// определяем по значению, а не по текущему глобальному refereeMode, чтобы оба
+// способа назначения оставались корректными вне зависимости от того, что выбрано
+// в настройках сейчас.
+const resolveReferee = (r, namesMap) => {
+  if (r == null || r === '') return null;
+  const byId = (namesMap || {})[r];
+  if (byId) return byId;
+  return typeof r === 'string' ? r : null;
+};
+
 // Строит порядок распределения sid по группам для splitIntoGroups согласно режиму жеребьёвки.
 const generateDrawOrder = (mode, totalTeams, groupSize, numSeeds) => {
   const seq = Array.from({ length: totalTeams }, (_, i) => i + 1);
@@ -431,14 +443,9 @@ const setCell = (ws, addr, cell) => { ws[addr] = cell; };
 const styled = (cell, style) => ({ ...cell, s: style });
 
 const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames = {}, varRows = [], refereeInfo = null) => {
-  const refereeMode = refereeInfo?.mode || 'manual';
   const refereeNamesMap = refereeInfo?.names || {};
   const matchRefereesMap = refereeInfo?.byMatch || {};
-  const refereeLabelFor = (matchId) => {
-    const r = matchRefereesMap[matchId];
-    if (r == null || r === '') return null;
-    return refereeMode === 'manual' ? r : (refereeNamesMap[r] || null);
-  };
+  const refereeLabelFor = (matchId) => resolveReferee(matchRefereesMap[matchId], refereeNamesMap);
   const wb = XLSX.utils.book_new();
   const { system, totalTeams, fields, groupSize, advance, startTime, drawOrder } = params;
   const hasGroups = system === 'group' || system === 'mixed' || system === 'mixed-full' || system === 'mixed-goldsilver' || system === 'mixed-goldsilver-full';
@@ -1514,7 +1521,7 @@ export default function TournamentBuilder() {
           });
         });
       });
-      generateXLSX(eff, structure, matches, schedule, slotDur, fieldNames, varRows, { mode: params.refereeMode || 'manual', names: refereeNames, byMatch: matchReferees });
+      generateXLSX(eff, structure, matches, schedule, slotDur, fieldNames, varRows, { names: refereeNames, byMatch: matchReferees });
     }
     catch (e) { alert('Ошибка генерации: ' + e.message); console.error(e); }
   };
@@ -1989,46 +1996,86 @@ export default function TournamentBuilder() {
  </div>
 
  <div className="bg-white rounded border border-black/10 p-5">
- <h2 className="text-xs font-black text-[#0c0c0c] mb-4 uppercase tracking-widest flex items-center gap-2"><Calendar className="w-5 h-5" />Превью расписания</h2>
+ <h2 className="text-xs font-black text-[#0c0c0c] mb-4 uppercase tracking-widest flex items-center gap-2"><Calendar className="w-5 h-5" />Расписание</h2>
  <div className="overflow-x-auto">
  <table className="w-full text-sm">
  <thead>
  <tr className="border-b border-black/10">
  <th className="text-left py-2 px-2 font-semibold text-neutral-700">День</th>
- <th className="text-left py-2 px-2 font-semibold text-neutral-700">№</th>
  <th className="text-left py-2 px-2 font-semibold text-neutral-700">Время</th>
- {Array.from({ length: eff.fields }, (_, i) => <th key={i} className="text-left py-2 px-2 font-semibold text-neutral-700">{fieldNames[i + 1] || `Поле ${i + 1}`}</th>)}
+ <th className="text-left py-2 px-2 font-semibold text-neutral-700">Поле</th>
+ <th className="text-left py-2 px-2 font-semibold text-neutral-700">Группа</th>
+ <th className="text-left py-2 px-2 font-semibold text-neutral-700">Команды</th>
+ <th className="text-left py-2 px-2 font-semibold text-neutral-700">Счёт</th>
+ <th className="text-left py-2 px-2 font-semibold text-neutral-700">Судья</th>
  </tr>
  </thead>
  <tbody>
- {sortedSlots.slice(0, previewSlots).map((sIdx, i) => {
+ {(() => {
+ const rows = [];
+ sortedSlots.forEach((sIdx) => {
  const pos = slotToDay(sIdx, dayOffsets, slotsInDay);
  const dayStart = timeToMin((dayInfos[pos.day - 1] || dayInfos[0]).startTime);
+ const time = `${minToTime(dayStart + pos.local * slotDur)}–${minToTime(dayStart + (pos.local + 1) * slotDur)}`;
+ for (let f = 1; f <= eff.fields; f++) {
+ const m = slotMap[sIdx][f];
+ if (m) rows.push({ sIdx, day: pos.day, time, field: fieldNames[f] || `Поле ${f}`, m });
+ }
+ });
+ return rows.slice(0, previewSlots).map(({ sIdx, day, time, field, m }) => {
+ const po = m.phase === 'playoff';
+ const sc = scores[m.id];
+ const played = sc && sc.a != null && sc.b != null;
+ const groupLabel = m.phase === 'group' ? `Гр.${m.group}` : `${m.bracket === 'gold' ? '🥇 ' : m.bracket === 'silver' ? '🥈 ' : ''}${m.roundName}`;
+ const refId = matchReferees[m.id];
  return (
- <tr key={sIdx} className="border-b border-slate-100 hover:bg-[#f5f2ec]">
- <td className="py-2 px-2 font-medium text-neutral-500">Д{pos.day}</td>
- <td className="py-2 px-2 font-medium">{pos.local + 1}</td>
- <td className="py-2 px-2 font-mono text-neutral-700 text-xs sm:text-sm whitespace-nowrap">{minToTime(dayStart + pos.local * slotDur)}–{minToTime(dayStart + (pos.local + 1) * slotDur)}</td>
- {Array.from({ length: eff.fields }, (_, f) => {
- const m = slotMap[sIdx][f + 1];
- const po = m && m.phase === 'playoff';
- return (
- <td key={f} className={`py-2 px-2 ${po ? 'text-[#b1040f] bg-[#e30613]/5' : 'text-[#0c0c0c]'}`}>
- {m ? (<><div className="text-xs text-neutral-500">{m.label}</div><div>{m.t1} — {m.t2}</div></>) : <span className="text-neutral-300">—</span>}
+ <tr key={m.id} className={`border-b border-slate-100 hover:bg-[#f5f2ec] ${po ? 'bg-[#e30613]/5' : ''}`}>
+ <td className="py-2 px-2 font-medium text-neutral-500">Д{day}</td>
+ <td className="py-2 px-2 font-mono text-neutral-700 text-xs sm:text-sm whitespace-nowrap">{time}</td>
+ <td className="py-2 px-2 text-neutral-700">{field}</td>
+ <td className={`py-2 px-2 ${po ? 'text-[#b1040f] font-semibold' : 'text-neutral-700'}`}>{groupLabel}</td>
+ <td className="py-2 px-2 text-[#0c0c0c]">{teamLabel(m, 't1')} — {teamLabel(m, 't2')}</td>
+ <td className="py-2 px-2 font-black tabular-nums">{played ? `${sc.a}:${sc.b}` : <span className="text-neutral-300 font-normal">–:–</span>}</td>
+ <td className="py-2 px-2">
+ <select value={refId || ''} className="inp text-xs py-1"
+ onChange={(e) => {
+ const v = e.target.value;
+ if (v === '__new__') {
+ const name = prompt('Имя нового судьи:');
+ if (!name || !name.trim()) return;
+ const ids = Object.keys(refereeNames).map(Number);
+ const nextId = (ids.length ? Math.max(...ids) : 0) + 1;
+ setRefereeNames({ ...refereeNames, [nextId]: name.trim() });
+ setMatchReferees({ ...matchReferees, [m.id]: nextId });
+ } else if (v === '') {
+ const next = { ...matchReferees }; delete next[m.id]; setMatchReferees(next);
+ } else {
+ setMatchReferees({ ...matchReferees, [m.id]: +v });
+ }
+ }}>
+ <option value="">— не назначен —</option>
+ {Object.keys(refereeNames).map(Number).sort((a, b) => a - b).map((rid) => (
+ <option key={rid} value={rid}>{refereeNames[rid] || `Судья ${rid}`}</option>
+ ))}
+ <option value="__new__">+ Новый судья…</option>
+ </select>
  </td>
- );
- })}
  </tr>
  );
- })}
+ });
+ })()}
  </tbody>
  </table>
  </div>
- {sortedSlots.length > previewSlots && (
+ {(() => {
+ let total = 0;
+ sortedSlots.forEach((sIdx) => { for (let f = 1; f <= eff.fields; f++) if (slotMap[sIdx][f]) total++; });
+ return total > previewSlots && (
  <button className="mt-3 text-sm text-[#e30613] hover:text-[#e30613]" onClick={() => setPreviewSlots(previewSlots + 10)}>
- Показать ещё ({sortedSlots.length - previewSlots})
+ Показать ещё ({total - previewSlots})
  </button>
- )}
+ );
+ })()}
  </div>
 
  <div className="bg-[#f5f2ec] rounded p-4 text-sm text-neutral-700">
@@ -2067,6 +2114,7 @@ export default function TournamentBuilder() {
   refereeMode={params.refereeMode || 'manual'}
   refereeNames={refereeNames}
   matchReferees={matchReferees}
+  setMatchReferees={setMatchReferees}
  />
  )}
 
@@ -2095,7 +2143,11 @@ export default function TournamentBuilder() {
   referee={matchReferees[scoreModal.matchId]}
   onRefereeChange={(v) => setMatchReferees({ ...matchReferees, [scoreModal.matchId]: v })}
   onSave={(a, b, events) => { setScores({ ...scores, [scoreModal.matchId]: { a, b, events } }); syncScoreOnline(scoreModal.matchId, a, b, events); setScoreModal(null); }}
-  onClear={() => { const s = { ...scores }; delete s[scoreModal.matchId]; setScores(s); setScoreModal(null); }}
+  onClear={() => {
+    const s = { ...scores }; delete s[scoreModal.matchId]; setScores(s);
+    const r = { ...matchReferees }; delete r[scoreModal.matchId]; setMatchReferees(r);
+    setScoreModal(null);
+  }}
   onClose={() => setScoreModal(null)}
  />
  )}
@@ -2212,12 +2264,8 @@ function Metric({ label, value, colorClass, warning, inverted }) {
 
 // Один блок плей-офф (заголовок + список матчей) — переиспользуется и для одиночной
 // сетки, и для золотой/серебряной (тогда рендерится дважды с разным заголовком/списком).
-function PlayoffBracketBlock({ title, poMatches, scores, teamColors, teamLabel, resolveSlot, setScoreModal, setProtocolModal, setQrModal, refereeMode, refereeNames, matchReferees }) {
-  const refereeLabel = (matchId) => {
-    const r = (matchReferees || {})[matchId];
-    if (r == null || r === '') return null;
-    return refereeMode === 'manual' ? r : ((refereeNames || {})[r] || null);
-  };
+function PlayoffBracketBlock({ title, poMatches, scores, teamColors, teamLabel, resolveSlot, setScoreModal, setProtocolModal, setQrModal, refereeNames, matchReferees }) {
+  const refereeLabel = (matchId) => resolveReferee((matchReferees || {})[matchId], refereeNames);
   return (
     <div className="bg-white border border-black/10">
       <div className="px-4 py-3 bg-[#e30613] text-white flex items-baseline justify-between">
@@ -2276,14 +2324,10 @@ function PlayoffBracketBlock({ title, poMatches, scores, teamColors, teamLabel, 
 }
 
 // ============ ЭКРАН «ТУРНИР» ============
-function TournamentView({ groups, matches, scores, setScores, teamNames, setTeamNames, teamColors, setTeamColors, teamName, teamLabel, resolveSlot, allStandings, actualSystem, setScoreModal, setImportModal, setQrModal, setProtocolModal, refereeMode, refereeNames, matchReferees }) {
+function TournamentView({ groups, matches, scores, setScores, teamNames, setTeamNames, teamColors, setTeamColors, teamName, teamLabel, resolveSlot, allStandings, actualSystem, setScoreModal, setImportModal, setQrModal, setProtocolModal, refereeMode, refereeNames, matchReferees, setMatchReferees }) {
   const [editingTeams, setEditingTeams] = useState(false);
-  // Имя судьи матча (текст в manual-режиме или lookup по roster в остальных)
-  const refereeLabel = (matchId) => {
-    const r = (matchReferees || {})[matchId];
-    if (r == null || r === '') return null;
-    return refereeMode === 'manual' ? r : ((refereeNames || {})[r] || null);
-  };
+  // Имя судьи матча (по id из справочника, либо свободный текст в manual-режиме)
+  const refereeLabel = (matchId) => resolveReferee((matchReferees || {})[matchId], refereeNames);
   const totalMatches = matches.length;
   const playedMatches = matches.filter((m) => {
     const s = scores[m.id];
@@ -2459,13 +2503,13 @@ function TournamentView({ groups, matches, scores, setScores, teamNames, setTeam
             <PlayoffBracketBlock key={bracketKey} title={bracketKey === 'gold' ? '🥇 Золотой плей-офф' : '🥈 Серебряный плей-офф'}
               poMatches={bMatches} scores={scores} teamColors={teamColors} teamLabel={teamLabel} resolveSlot={resolveSlot}
               setScoreModal={setScoreModal} setProtocolModal={setProtocolModal} setQrModal={setQrModal}
-              refereeMode={refereeMode} refereeNames={refereeNames} matchReferees={matchReferees} />
+              refereeNames={refereeNames} matchReferees={matchReferees} />
           );
         })
       ) : poMatches.length > 0 && (
         <PlayoffBracketBlock title="🏆 Плей-офф" poMatches={poMatches} scores={scores} teamColors={teamColors} teamLabel={teamLabel}
           resolveSlot={resolveSlot} setScoreModal={setScoreModal} setProtocolModal={setProtocolModal} setQrModal={setQrModal}
-          refereeMode={refereeMode} refereeNames={refereeNames} matchReferees={matchReferees} />
+          refereeNames={refereeNames} matchReferees={matchReferees} />
       )}
 
       {/* Сброс */}
@@ -2474,6 +2518,7 @@ function TournamentView({ groups, matches, scores, setScores, teamNames, setTeam
           if (confirm('Удалить все счета и названия команд? Параметры турнира сохранятся.')) {
             setScores({});
             setTeamNames({});
+            setMatchReferees({});
           }
         }} className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 hover:text-[#e30613]">
           Сбросить турнир
@@ -2613,12 +2658,10 @@ function QRModal({ matchLabel, matchId, judgeUrl, kind = 'judge', title, descrip
 }
 
 // ============ ПЕЧАТНЫЙ ПРОТОКОЛ МАТЧА (РФС-стиль) ============
-function ProtocolModal({ modal, scores, teamColors, refereeMode, refereeNames, referee, onClose }) {
+function ProtocolModal({ modal, scores, teamColors, refereeNames, referee, onClose }) {
   const c1 = teamColors && modal.sid1 && teamColors[modal.sid1];
   const c2 = teamColors && modal.sid2 && teamColors[modal.sid2];
-  const refereeDisplayName = referee == null || referee === ''
-    ? null
-    : (refereeMode === 'manual' ? referee : ((refereeNames || {})[referee] || null));
+  const refereeDisplayName = resolveReferee(referee, refereeNames);
   useEffect(() => {
     document.body.classList.add('protocol-printing');
     return () => document.body.classList.remove('protocol-printing');
