@@ -1023,9 +1023,16 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
           .flatMap((c) => rowRanges.map(([a, b]) => (a === b ? `${c}${a}` : `${c}${a}:${c}${b}`)))
           .join(' ');
         const dataValidationsXml = `<dataValidations count="1"><dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1" sqref="${sqref}"><formula1>${listFormula}</formula1></dataValidation></dataValidations>`;
+        // Порядок элементов в CT_Worksheet строгий: dataValidations должен идти
+        // РАНЬШЕ hyperlinks/printOptions/pageMargins и РАНЬШЕ ignoredErrors —
+        // xlsx-js-style сам добавляет <ignoredErrors> (числа как текст) перед
+        // </worksheet>, и наивная вставка перед pageMargins/</worksheet> может
+        // оказаться ПОСЛЕ ignoredErrors, что и ломает файл.
         const sheetXml = fflate.strFromU8(zip[sheetFile]);
         let patchedSheetXml;
-        if (/<pageMargins\b/.test(sheetXml)) {
+        if (/<ignoredErrors\b/.test(sheetXml)) {
+          patchedSheetXml = sheetXml.replace(/<ignoredErrors\b/, `${dataValidationsXml}<ignoredErrors`);
+        } else if (/<pageMargins\b/.test(sheetXml)) {
           patchedSheetXml = sheetXml.replace(/<pageMargins\b/, `${dataValidationsXml}<pageMargins`);
         } else {
           patchedSheetXml = sheetXml.replace('</worksheet>', `${dataValidationsXml}</worksheet>`);
