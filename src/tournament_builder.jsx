@@ -42,22 +42,60 @@ const playoffSeeds = (bracketSize) => {
   return seeds;
 };
 
-const splitIntoGroups = (totalTeams, groupSize) => {
+const splitIntoGroups = (totalTeams, groupSize, order) => {
   // Последовательное распределение: команды 1..N в группу 1, N+1..2N в группу 2, и т.д.
   // Если totalTeams не делится нацело — экстра-команды попадают в ПОСЛЕДНИЕ группы
   // (нормальная практика для турниров: первые группы держат заявленный размер, в последних +1).
+  // `order` (опционально) — результат жеребьёвки: массив sid в том порядке, в котором их
+  // раскладывают по группам (см. generateDrawOrder). По умолчанию — просто 1..N.
+  const seq = (order && order.length === totalTeams) ? order : Array.from({ length: totalTeams }, (_, i) => i + 1);
   const numGroups = Math.max(1, Math.floor(totalTeams / groupSize));
   const base = Math.floor(totalTeams / numGroups);
   const extra = totalTeams - base * numGroups; // 0 <= extra < numGroups
   const groups = [];
-  let t = 1;
+  let idx = 0;
   for (let g = 0; g < numGroups; g++) {
     const sz = g >= numGroups - extra ? base + 1 : base;
     const teams = [];
-    for (let i = 0; i < sz; i++) teams.push(t++);
+    for (let i = 0; i < sz; i++) teams.push(seq[idx++]);
     groups.push(teams);
   }
   return groups;
+};
+
+// Перемешивание Фишера-Йетса (не для токенов/ID — обычная жеребьёвка команд, Math.random достаточно).
+const shuffleArr = (arr) => {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+
+// Строит порядок распределения sid по группам для splitIntoGroups согласно режиму жеребьёвки.
+const generateDrawOrder = (mode, totalTeams, groupSize, numSeeds) => {
+  const seq = Array.from({ length: totalTeams }, (_, i) => i + 1);
+  if (mode === 'random') return shuffleArr(seq);
+  if (mode === 'seeded') {
+    const numGroups = Math.max(1, Math.floor(totalTeams / groupSize));
+    const base = Math.floor(totalTeams / numGroups);
+    const extra = totalTeams - base * numGroups;
+    const seedCount = Math.max(0, Math.min(numSeeds || 0, numGroups, totalTeams));
+    const seeds = seq.slice(0, seedCount);
+    const rest = shuffleArr(seq.slice(seedCount));
+    const order = [];
+    let restIdx = 0;
+    for (let g = 0; g < numGroups; g++) {
+      const sz = g >= numGroups - extra ? base + 1 : base;
+      const chunk = [];
+      if (g < seeds.length) chunk.push(seeds[g]);
+      while (chunk.length < sz && restIdx < rest.length) chunk.push(rest[restIdx++]);
+      order.push(...chunk);
+    }
+    return order;
+  }
+  return seq; // 'sequential'
 };
 
 const countGames = (sys, totalTeams, groupSize, advance) => {
@@ -125,12 +163,12 @@ const recommend = (totalTeams, fields, minutesAvailable) => {
 // ============ ПОСТРОЕНИЕ МАТЧЕЙ ============
 // Для mixed/playoff помечаем плей-офф матчи seed-метками для связи формулами
 const buildMatches = (params) => {
-  const { totalTeams, system, groupSize, advance } = params;
+  const { totalTeams, system, groupSize, advance, drawOrder } = params;
   const matches = [];
   let id = 1;
 
   if (system === 'group' || system === 'mixed') {
-    const groups = splitIntoGroups(totalTeams, groupSize);
+    const groups = splitIntoGroups(totalTeams, groupSize, drawOrder);
     groups.forEach((teams, gIdx) => {
       const rounds = roundRobin(teams.length);
       rounds.forEach((round, rIdx) => {
@@ -297,8 +335,8 @@ const styled = (cell, style) => ({ ...cell, s: style });
 
 const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames = {}, varRows = []) => {
   const wb = XLSX.utils.book_new();
-  const { system, totalTeams, fields, groupSize, advance, startTime } = params;
-  const groups = (system === 'group' || system === 'mixed') ? splitIntoGroups(totalTeams, groupSize) : [];
+  const { system, totalTeams, fields, groupSize, advance, startTime, drawOrder } = params;
+  const groups = (system === 'group' || system === 'mixed') ? splitIntoGroups(totalTeams, groupSize, drawOrder) : [];
   const numGroups = groups.length;
 
   // ===== РАСПРЕДЕЛЕНИЕ КОМАНД =====
@@ -994,6 +1032,7 @@ export default function TournamentBuilder() {
     totalTeams: 20, fields: 2, startTime: '10:00', endTime: '20:00',
     system: 'auto', groupSize: 4, advance: 2, days: 1,
     scheduleMode: 'sequential', restMode: 'auto', maxGamesPerDay: null,
+    drawMode: 'sequential', numSeeds: 4,
   });
   const [matchDurMode, setMatchDurMode] = useState('auto');
   const [manualDur, setManualDur] = useState(40);
@@ -1006,6 +1045,7 @@ export default function TournamentBuilder() {
   const [minRest, setMinRest] = useState(0); // минимум минут отдыха между матчами команды
   const [blockedSlots, setBlockedSlots] = useState([]); // [{ day, slotStart, slotEnd, label }]
   const [dayWindows, setDayWindows] = useState({}); // { 2: { startTime: "09:00", endTime: "18:00" } }
+  const [drawOrder, setDrawOrder] = useState(null); // результат жеребьёвки: массив sid, null = ещё не проводили (последовательно)
   const [tab, setTab] = useState('setup');
   const [scoreModal, setScoreModal] = useState(null);
   const [importModal, setImportModal] = useState(false);
@@ -1036,6 +1076,7 @@ export default function TournamentBuilder() {
       totalTeams: 20, fields: 2, startTime: '10:00', endTime: '20:00',
       system: 'auto', groupSize: 4, advance: 2, days: 1,
       scheduleMode: 'sequential', restMode: 'auto', maxGamesPerDay: null,
+    drawMode: 'sequential', numSeeds: 4,
       ...(saved.params || {}),
     });
     setTeamNames(saved.teamNames || {});
@@ -1047,6 +1088,7 @@ export default function TournamentBuilder() {
     setMinRest(saved.minRest != null ? saved.minRest : 0);
     setBlockedSlots(saved.blockedSlots || []);
     setDayWindows(saved.dayWindows || {});
+    setDrawOrder(saved.drawOrder || null);
     setOnlineId(saved.onlineId || null);
   };
 
@@ -1100,7 +1142,7 @@ export default function TournamentBuilder() {
   useEffect(() => {
     if (!tournamentId) return; // ждём завершения начальной загрузки
     try {
-      localStorage.setItem(tournamentDataKey(tournamentId), JSON.stringify({ params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, onlineId }));
+      localStorage.setItem(tournamentDataKey(tournamentId), JSON.stringify({ params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, drawOrder, onlineId }));
       setTournamentsIndex((prev) => {
         const next = prev.map((t) => (t.id === tournamentId
           ? { ...t, name: tournamentName, savedAt: Date.now(), totalTeams: params.totalTeams, system: params.system }
@@ -1109,7 +1151,7 @@ export default function TournamentBuilder() {
         return next;
       });
     } catch (e) { console.error('save failed', e); }
-  }, [tournamentId, params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, tournamentName, onlineId]);
+  }, [tournamentId, params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, drawOrder, tournamentName, onlineId]);
 
   const dayMin = timeToMin(params.endTime) - timeToMin(params.startTime);
   const availMin = Math.max(60, dayMin - 30);
@@ -1130,13 +1172,13 @@ export default function TournamentBuilder() {
     fields: safeNum(params.fields, 1, 20, 1),
     days: safeNum(params.days, 1, 14, 1),
     system: actualSystem, groupSize: actualGroupSize, advance: actualAdvance,
-    dayWindows,
+    dayWindows, drawOrder,
     // Служебные — заполним ниже, после расчёта slotDur
     minRestSlots: 0,
     blockedSlotIdxs: [],
   };
 
-  const matches = useMemo(() => buildMatches(eff), [eff.totalTeams, eff.system, eff.groupSize, eff.advance]);
+  const matches = useMemo(() => buildMatches(eff), [eff.totalTeams, eff.system, eff.groupSize, eff.advance, drawOrder]);
   // Первичное расписание без ограничений — нужно чтобы вычислить slotDur
   const baseSchedule = useMemo(() => scheduleMatches(matches, eff.fields, eff), [matches, eff.fields]);
   const baseStruct = useMemo(() => computeStructure(eff, matches, baseSchedule), [matches, baseSchedule, eff.days, eff.startTime, eff.endTime, eff.fields, eff.scheduleMode, eff.maxGamesPerDay, JSON.stringify(dayWindows)]);
@@ -1180,9 +1222,9 @@ export default function TournamentBuilder() {
   // Группы команд (для системы group/mixed)
   const groups = useMemo(() =>
     (actualSystem === 'group' || actualSystem === 'mixed')
-      ? splitIntoGroups(eff.totalTeams, eff.groupSize)
+      ? splitIntoGroups(eff.totalTeams, eff.groupSize, drawOrder)
       : [],
-    [actualSystem, eff.totalTeams, eff.groupSize]
+    [actualSystem, eff.totalTeams, eff.groupSize, drawOrder]
   );
   const sidOf = (gi, pi) => (groups[gi] && groups[gi][pi - 1]) || 0;
 
@@ -1560,6 +1602,27 @@ export default function TournamentBuilder() {
  <select value={actualGroupSize} disabled={params.system === 'auto'} onChange={(e) => setParams({ ...params, groupSize: +e.target.value })} className="inp disabled:bg-[#f5f2ec] disabled:text-neutral-500">
  {[3,4,5,6,7,8,9,10,11,12,13,14,15,16].map((n) => <option key={n} value={n}>{n}</option>)}
  </select>
+ </Field>
+ )}
+ {(actualSystem === 'group' || actualSystem === 'mixed') && (
+ <Field label="Жеребьёвка">
+ <div className="flex gap-2 items-center">
+ <select value={params.drawMode || 'sequential'} onChange={(e) => setParams({ ...params, drawMode: e.target.value })} className="inp flex-1">
+ <option value="sequential">Последовательная</option>
+ <option value="random">Случайная</option>
+ <option value="seeded">С учётом сеяных команд</option>
+ </select>
+ <button type="button" onClick={() => setDrawOrder(generateDrawOrder(params.drawMode || 'sequential', eff.totalTeams, actualGroupSize, params.numSeeds))}
+ className="px-3 py-2 text-xs font-bold uppercase tracking-widest text-white bg-[#e30613] hover:bg-[#b1040f] whitespace-nowrap">🎲 Провести</button>
+ </div>
+ {(params.drawMode || 'sequential') === 'seeded' && (
+ <div className="mt-2">
+ <BoundedNumber value={params.numSeeds} min={1} max={Math.max(1, Math.floor(eff.totalTeams / actualGroupSize))}
+ onCommit={(n) => setParams({ ...params, numSeeds: n })} />
+ <div className="text-[10px] text-neutral-400 mt-1">Сколько сеяных команд — по одной на группу, остальные вразброс</div>
+ </div>
+ )}
+ {drawOrder && <div className="text-[10px] text-neutral-400 mt-1">Жеребьёвка проведена — состав групп зафиксирован ниже</div>}
  </Field>
  )}
  {actualSystem === 'mixed' && (
