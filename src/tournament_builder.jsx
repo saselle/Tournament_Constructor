@@ -2181,6 +2181,26 @@ export default function TournamentBuilder() {
  {actualSystem !== 'group' && <div>🏆 <strong>Плей-офф</strong> — вписываете голы → победители проходят сами</div>}
  </div>
  </div>
+
+ <div className="pt-4 border-t border-black/10 flex flex-wrap gap-4">
+ <button onClick={() => {
+ if (confirm('Удалить все счета и названия команд? Параметры турнира сохранятся.')) {
+ setScores({});
+ setTeamNames({});
+ setMatchReferees({});
+ }
+ }} className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 hover:text-[#e30613]">
+ Сбросить турнир
+ </button>
+ <button onClick={() => {
+ if (confirm('Удалить список судей и все назначения судей на матчи?')) {
+ setRefereeNames({});
+ setMatchReferees({});
+ }
+ }} className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 hover:text-[#e30613]">
+ Сбросить судей
+ </button>
+ </div>
  </div>
  </div>
  )}
