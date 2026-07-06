@@ -160,6 +160,136 @@ const recommend = (totalTeams, fields, minutesAvailable) => {
   return cand[0];
 };
 
+// ============ ПОСТРОЕНИЕ СЕТКИ ПЛЕЙ-ОФФ ============
+const ROUND_NAMES = ['Финал', '1/2', '1/4', '1/8', '1/16', '1/32', '1/64'];
+
+// "Утешительная" под-сетка мест из проигравших конкретных матчей — без BYE, т.к.
+// количество лузеров каждого раунда всегда степень двойки. rankOffset — лучшее
+// место, которое может занять победитель этой под-сетки (проигравший — rankOffset+1).
+// Рекурсивно продолжает вглубь: полуфинальные лузеры этой же под-сетки определяют
+// следующую пару мест (например, из 5-8 получаем 5-6 и 7-8).
+const buildPlacementBracket = (loserMatchIds, startId, rankOffset, bracket) => {
+  const matches = [];
+  let id = startId;
+  const bracketSize = loserMatchIds.length;
+  const numRounds = Math.log2(bracketSize);
+  const isSingleMatch = numRounds === 1;
+  const finalLabel = `За ${rankOffset}-${rankOffset + 1} место`;
+
+  const r1Start = id;
+  for (let i = 0; i < bracketSize / 2; i++) {
+    const a = loserMatchIds[i * 2], b = loserMatchIds[i * 2 + 1];
+    matches.push({
+      id: id++, phase: 'playoff', round: 1, bracket,
+      roundName: isSingleMatch ? finalLabel : (ROUND_NAMES[numRounds - 1] || 'Раунд 1'),
+      loseFrom: [a, b],
+      t1: `Проигр.М${a}`, t2: `Проигр.М${b}`,
+      label: isSingleMatch ? finalLabel : `${ROUND_NAMES[numRounds - 1] || 'Р1'} (места) м.${i + 1}`,
+    });
+  }
+  const roundStarts = [r1Start];
+  const roundCounts = [bracketSize / 2];
+  let prevStart = r1Start, prevCount = bracketSize / 2;
+  for (let r = 2; r <= numRounds; r++) {
+    const cnt = prevCount / 2;
+    const rStart = id;
+    const isFinal = r === numRounds;
+    const rName = isFinal ? finalLabel : (ROUND_NAMES[numRounds - r] || `Раунд ${r}`);
+    for (let i = 0; i < cnt; i++) {
+      matches.push({
+        id: id++, phase: 'playoff', round: r, bracket,
+        roundName: rName,
+        winFrom: [prevStart + i * 2, prevStart + i * 2 + 1],
+        t1: `Поб.М${prevStart + i * 2}`, t2: `Поб.М${prevStart + i * 2 + 1}`,
+        label: isFinal ? rName : `${rName} (места) м.${i + 1}`,
+      });
+    }
+    roundStarts.push(rStart); roundCounts.push(cnt);
+    prevStart = rStart; prevCount = cnt;
+  }
+
+  let nextId = id;
+  for (let r = 1; r <= numRounds - 1; r++) {
+    const cnt2 = roundCounts[r - 1];
+    if (cnt2 < 2) continue;
+    const ids2 = Array.from({ length: cnt2 }, (_, i) => roundStarts[r - 1] + i);
+    const subRankOffset = rankOffset + Math.pow(2, numRounds - r);
+    const sub = buildPlacementBracket(ids2, nextId, subRankOffset, bracket);
+    matches.push(...sub.matches);
+    nextId = sub.nextId;
+  }
+  return { matches, nextId };
+};
+
+// Основная сетка на вылет (seed-based первый раунд, с BYE если playoffTeams — не степень
+// двойки). fullPlacement=false — только бронза (как раньше); true — расписывает ВСЕ места
+// через buildPlacementBracket для лузеров каждого раунда, кроме финала.
+const buildBracketMatches = (startId, playoffTeams, opts) => {
+  const { bracket = null, fullPlacement = false } = opts || {};
+  const matches = [];
+  let id = startId;
+  const bracketSize = nextPow2(playoffTeams);
+  const numRounds = Math.log2(bracketSize);
+  const seeds = playoffSeeds(bracketSize);
+
+  const r1Start = id;
+  seeds.forEach(([a, b], i) => {
+    matches.push({
+      id: id++, phase: 'playoff', round: 1, bracket,
+      roundName: ROUND_NAMES[numRounds - 1] || 'Раунд 1',
+      seedA: a, seedB: b, playoffTeams, bracketSize,
+      t1: a > playoffTeams ? 'BYE' : `СИД${a}`,
+      t2: b > playoffTeams ? 'BYE' : `СИД${b}`,
+      label: `${ROUND_NAMES[numRounds - 1] || 'Р1'} м.${i + 1}`,
+      prevWin: null,
+    });
+  });
+
+  const roundStarts = [r1Start];
+  const roundCounts = [seeds.length];
+  let prevStart = r1Start, prevCount = seeds.length;
+  for (let r = 2; r <= numRounds; r++) {
+    const cnt = prevCount / 2;
+    const rStart = id;
+    for (let i = 0; i < cnt; i++) {
+      matches.push({
+        id: id++, phase: 'playoff', round: r, bracket,
+        roundName: ROUND_NAMES[numRounds - r] || `Раунд ${r}`,
+        winFrom: [prevStart + i * 2, prevStart + i * 2 + 1],
+        t1: `Поб.М${prevStart + i * 2}`, t2: `Поб.М${prevStart + i * 2 + 1}`,
+        label: `${ROUND_NAMES[numRounds - r] || `Р${r}`} м.${i + 1}`,
+      });
+    }
+    roundStarts.push(rStart); roundCounts.push(cnt);
+    prevStart = rStart; prevCount = cnt;
+  }
+
+  let nextId = id;
+  if (numRounds >= 2) {
+    if (!fullPlacement) {
+      // только бронза — полуфиналы это предпоследний раунд
+      const sfStart = roundStarts[numRounds - 2];
+      matches.push({
+        id: nextId++, phase: 'playoff', round: numRounds, isBronze: true, bracket,
+        roundName: 'Бронза',
+        loseFrom: [sfStart, sfStart + 1],
+        t1: `Проигр.М${sfStart}`, t2: `Проигр.М${sfStart + 1}`,
+        label: 'За 3-е место',
+      });
+    } else {
+      for (let r = 1; r <= numRounds - 1; r++) {
+        const cnt = roundCounts[r - 1];
+        const ids = Array.from({ length: cnt }, (_, i) => roundStarts[r - 1] + i);
+        const rankOffset = cnt + 1;
+        const sub = buildPlacementBracket(ids, nextId, rankOffset, bracket);
+        matches.push(...sub.matches);
+        nextId = sub.nextId;
+      }
+    }
+  }
+  return { matches, nextId };
+};
+
 // ============ ПОСТРОЕНИЕ МАТЧЕЙ ============
 // Для mixed/playoff помечаем плей-офф матчи seed-метками для связи формулами
 const buildMatches = (params) => {
@@ -167,7 +297,7 @@ const buildMatches = (params) => {
   const matches = [];
   let id = 1;
 
-  if (system === 'group' || system === 'mixed') {
+  if (system === 'group' || system === 'mixed' || system === 'mixed-full' || system === 'mixed-goldsilver' || system === 'mixed-goldsilver-full') {
     const groups = splitIntoGroups(totalTeams, groupSize, drawOrder);
     groups.forEach((teams, gIdx) => {
       const rounds = roundRobin(teams.length);
@@ -183,60 +313,27 @@ const buildMatches = (params) => {
     });
   }
 
-  if (system === 'playoff' || system === 'mixed') {
-    let playoffTeams;
-    if (system === 'playoff') playoffTeams = totalTeams;
-    else playoffTeams = Math.floor(totalTeams / groupSize) * advance;
+  const numGroups = (system === 'group' || system === 'mixed' || system === 'mixed-full' || system === 'mixed-goldsilver' || system === 'mixed-goldsilver-full')
+    ? splitIntoGroups(totalTeams, groupSize, drawOrder).length : 0;
 
-    const bracketSize = nextPow2(playoffTeams);
-    const numRounds = Math.log2(bracketSize);
-    const seeds = playoffSeeds(bracketSize);
-    const roundNames = ['Финал', '1/2', '1/4', '1/8', '1/16', '1/32', '1/64'];
-
-    // первый раунд — seed-метки seedA/seedB
-    const r1Start = id;
-    seeds.forEach(([a, b], i) => {
-      matches.push({
-        id: id++, phase: 'playoff', round: 1,
-        roundName: roundNames[numRounds - 1] || 'Раунд 1',
-        seedA: a, seedB: b, playoffTeams, bracketSize,
-        t1: a > playoffTeams ? 'BYE' : `СИД${a}`,
-        t2: b > playoffTeams ? 'BYE' : `СИД${b}`,
-        label: `${roundNames[numRounds - 1] || 'Р1'} м.${i + 1}`,
-        prevWin: null,
-      });
-    });
-
-    // последующие раунды — ссылки на победителей
-    let prevStart = r1Start;
-    let prevCount = seeds.length;
-    for (let r = 2; r <= numRounds; r++) {
-      const cnt = prevCount / 2;
-      for (let i = 0; i < cnt; i++) {
-        matches.push({
-          id: id++, phase: 'playoff', round: r,
-          roundName: roundNames[numRounds - r] || `Раунд ${r}`,
-          winFrom: [prevStart + i * 2, prevStart + i * 2 + 1],
-          t1: `Поб.М${prevStart + i * 2}`, t2: `Поб.М${prevStart + i * 2 + 1}`,
-          label: `${roundNames[numRounds - r] || `Р${r}`} м.${i + 1}`,
-        });
-      }
-      prevStart += prevCount;
-      prevCount = cnt;
-    }
-
-    // бронза
-    if (numRounds >= 2) {
-      // полуфиналы — два матча перед финалом
-      const sfStart = prevStart - 2; // позиция первого полуфинала
-      matches.push({
-        id: id++, phase: 'playoff', round: numRounds, isBronze: true,
-        roundName: 'Бронза',
-        loseFrom: [sfStart, sfStart + 1],
-        t1: `Проигр.М${sfStart}`, t2: `Проигр.М${sfStart + 1}`,
-        label: 'За 3-е место',
-      });
-    }
+  if (system === 'playoff' || system === 'playoff-full') {
+    const res = buildBracketMatches(id, totalTeams, { fullPlacement: system === 'playoff-full' });
+    matches.push(...res.matches);
+    id = res.nextId;
+  } else if (system === 'mixed' || system === 'mixed-full') {
+    const playoffTeams = numGroups * advance;
+    const res = buildBracketMatches(id, playoffTeams, { fullPlacement: system === 'mixed-full' });
+    matches.push(...res.matches);
+    id = res.nextId;
+  } else if (system === 'mixed-goldsilver' || system === 'mixed-goldsilver-full') {
+    // 1-е места групп -> золотой плей-офф, 2-е места -> серебряный. Каждая сетка независима.
+    const full = system === 'mixed-goldsilver-full';
+    const gold = buildBracketMatches(id, numGroups, { bracket: 'gold', fullPlacement: full });
+    matches.push(...gold.matches);
+    id = gold.nextId;
+    const silver = buildBracketMatches(id, numGroups, { bracket: 'silver', fullPlacement: full });
+    matches.push(...silver.matches);
+    id = silver.nextId;
   }
   return matches;
 };
@@ -336,7 +433,10 @@ const styled = (cell, style) => ({ ...cell, s: style });
 const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames = {}, varRows = []) => {
   const wb = XLSX.utils.book_new();
   const { system, totalTeams, fields, groupSize, advance, startTime, drawOrder } = params;
-  const groups = (system === 'group' || system === 'mixed') ? splitIntoGroups(totalTeams, groupSize, drawOrder) : [];
+  const hasGroups = system === 'group' || system === 'mixed' || system === 'mixed-full' || system === 'mixed-goldsilver' || system === 'mixed-goldsilver-full';
+  const isMixedAdvance = system === 'mixed' || system === 'mixed-full';
+  const isGoldSilver = system === 'mixed-goldsilver' || system === 'mixed-goldsilver-full';
+  const groups = hasGroups ? splitIntoGroups(totalTeams, groupSize, drawOrder) : [];
   const numGroups = groups.length;
 
   // ===== РАСПРЕДЕЛЕНИЕ КОМАНД =====
@@ -560,7 +660,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
   const poLoseRef = {};
   const poT1Ref = {}; // matchId -> "Плей-офф!$D$N"
   const poT2Ref = {};
-  if (system === 'playoff' || system === 'mixed') {
+  if (system !== 'group') {
     const poMatches = matches.filter((m) => m.phase === 'playoff');
     const ws = {};
     let R = 1;
@@ -621,7 +721,17 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
           const sd = col === C.t1 ? m.seedA : m.seedB;
           if (sd > m.playoffTeams) {
             setCell(ws, addr, { v: 'BYE', s: { ...rowStyle, font: { ...(rowStyle.font || {}), italic: true, color: { rgb: '94A3B8' } } } });
-          } else if (system === 'mixed') {
+          } else if (m.bracket === 'gold' || m.bracket === 'silver') {
+            // Золото/серебро: сид N — это группа N, место фиксировано (1-е для золота, 2-е для серебра)
+            const placeIdx = m.bracket === 'gold' ? 1 : 2;
+            const grIdx = sd;
+            const key = `G${grIdx}:${placeIdx}`;
+            const placeOrd = placeIdx === 1 ? '1-е' : '2-е';
+            const fall = `${placeOrd} место Гр.${grIdx}`;
+            setCell(ws, addr, placeFormula[key]
+              ? { f: `IFERROR(${placeFormula[key]},"${fall}")`, s: rowStyle }
+              : { v: fall, s: rowStyle });
+          } else if (isMixedAdvance) {
             const ng = numGroups;
             const placeIdx = Math.ceil(sd / ng);
             const grIdx = ((sd - 1) % ng) + 1;
@@ -741,7 +851,11 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
     const finishTime = minToTime(finishMin);
     const finishLabel = structure.daysNeeded > 1 ? `Финиш (день ${structure.daysNeeded})` : 'Финиш последнего матча';
 
-    const sysName = { group: 'Групповая', playoff: 'Плей-офф', mixed: 'Смешанная (группы + плей-офф)' }[system];
+    const sysName = {
+      group: 'Групповая', playoff: 'Плей-офф', mixed: 'Смешанная (группы + плей-офф)',
+      'playoff-full': 'Плей-офф (розыгрыш всех мест)', 'mixed-full': 'Смешанная (розыгрыш всех мест)',
+      'mixed-goldsilver': 'Смешанная (золото/серебро)', 'mixed-goldsilver-full': 'Смешанная (золото/серебро, все места)',
+    }[system];
     const rows = [
       [{ v: 'ПАРАМЕТРЫ ТУРНИРА', s: STYLES.pageTitle }, ''],
       [],
@@ -758,13 +872,14 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
       rows.push([{ v: 'Размер группы', s: STYLES.cellName }, { v: groupSize, s: STYLES.cell }]);
       rows.push([{ v: 'Групп', s: STYLES.cellName }, { v: numGroups, s: STYLES.cell }]);
     }
-    if (system === 'mixed') rows.push([{ v: 'Из группы в плей-офф', s: STYLES.cellName }, { v: `топ-${advance}`, s: STYLES.cell }]);
+    if (isMixedAdvance) rows.push([{ v: 'Из группы в плей-офф', s: STYLES.cellName }, { v: `топ-${advance}`, s: STYLES.cell }]);
+    if (isGoldSilver) rows.push([{ v: 'Из группы в плей-офф', s: STYLES.cellName }, { v: '1-е — золото, 2-е — серебро', s: STYLES.cell }]);
     rows.push([]);
     rows.push([{ v: 'Всего матчей', s: STYLES.cellName }, { v: matches.length, s: STYLES.cell }]);
     rows.push([{ v: 'Всего слотов', s: STYLES.cellName }, { v: structure.slots, s: STYLES.cell }]);
     rows.push([]);
     rows.push([{ v: 'КАК ПОЛЬЗОВАТЬСЯ', s: STYLES.sectionHeader }, { v: '', s: STYLES.sectionHeader }]);
-    if (system === 'playoff') {
+    if (system === 'playoff' || system === 'playoff-full') {
       rows.push([{ v: '1.', s: STYLES.cell }, { v: 'На листе «Команды» впишите названия (колонка «Команда»)', s: STYLES.cellName }]);
       rows.push([{ v: '2.', s: STYLES.cell }, { v: 'На листе «Плей-офф» вписывайте голы в жёлтые ячейки — победители проходят сами', s: STYLES.cellName }]);
       rows.push([{ v: '3.', s: STYLES.cell }, { v: 'Лист «Расписание» — календарь по полям', s: STYLES.cellName }]);
@@ -775,7 +890,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
     } else {
       rows.push([{ v: '1.', s: STYLES.cell }, { v: 'На листе «Команды» впишите названия. Они автоматически распределятся по группам', s: STYLES.cellName }]);
       rows.push([{ v: '2.', s: STYLES.cell }, { v: 'На листе «Шахматки» вписывайте голы — очки и места считаются сами', s: STYLES.cellName }]);
-      rows.push([{ v: '3.', s: STYLES.cell }, { v: 'В сетке плей-офф первые ' + advance + ' места из групп подставятся автоматически. Вписывайте голы — победители проходят сами', s: STYLES.cellName }]);
+      rows.push([{ v: '3.', s: STYLES.cell }, { v: isGoldSilver ? 'В золотой плей-офф выходят 1-е места групп, в серебряный — 2-е. Вписывайте голы — победители проходят сами' : ('В сетке плей-офф первые ' + advance + ' места из групп подставятся автоматически. Вписывайте голы — победители проходят сами'), s: STYLES.cellName }]);
       rows.push([{ v: '4.', s: STYLES.cell }, { v: 'Лист «Расписание» — календарь матчей по полям и слотам', s: STYLES.cellName }]);
     }
     const ws = aoa(rows);
@@ -952,9 +1067,11 @@ const computeStructure = (params, matches, schedule, slotDurOverride) => {
   const dayMin = dayInfos[0].dayMin;
 
   let numGroups = 0, playoffTeams = 0;
-  if (system === 'group' || system === 'mixed') numGroups = splitIntoGroups(totalTeams, groupSize).length;
-  if (system === 'mixed') playoffTeams = numGroups * advance;
-  else if (system === 'playoff') playoffTeams = totalTeams;
+  const hasGroupsSys = system === 'group' || system === 'mixed' || system === 'mixed-full' || system === 'mixed-goldsilver' || system === 'mixed-goldsilver-full';
+  if (hasGroupsSys) numGroups = splitIntoGroups(totalTeams, groupSize).length;
+  if (system === 'mixed' || system === 'mixed-full') playoffTeams = numGroups * advance;
+  else if (system === 'mixed-goldsilver' || system === 'mixed-goldsilver-full') playoffTeams = numGroups * 2; // золото+серебро вместе, для метрик
+  else if (system === 'playoff' || system === 'playoff-full') playoffTeams = totalTeams;
 
   return {
     games, slots: slotsNeeded, matchDur, numGroups, playoffTeams,
@@ -980,7 +1097,11 @@ const TOURNAMENTS_INDEX_KEY = 'msg_tournaments_index_v1';
 const LEGACY_STORAGE_KEY = 'msg_tournament_v1'; // старый формат — один турнир без ID
 const tournamentDataKey = (id) => `msg_tournament_data_v1:${id}`;
 const makeTournamentId = () => `t_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-const SYS_LABELS = { auto: 'Авто', group: 'Групповая', playoff: 'Плей-офф', mixed: 'Смешанная' };
+const SYS_LABELS = {
+  auto: 'Авто', group: 'Групповая', playoff: 'Плей-офф', mixed: 'Смешанная',
+  'playoff-full': 'Плей-офф (все места)', 'mixed-full': 'Смешанная (все места)',
+  'mixed-goldsilver': 'Золото/серебро', 'mixed-goldsilver-full': 'Золото/серебро (все места)',
+};
 
 // ============ ОНЛАЙН-СИНХРОНИЗАЦИЯ СУДЕЙ И ТРАНСЛЯЦИЯ ДЛЯ РОДИТЕЛЕЙ ============
 // Отдельный бэкенд (Cloudflare Worker + D1 + Durable Object) — судьи на разных
@@ -1221,7 +1342,7 @@ export default function TournamentBuilder() {
 
   // Группы команд (для системы group/mixed)
   const groups = useMemo(() =>
-    (actualSystem === 'group' || actualSystem === 'mixed')
+    (actualSystem === 'group' || actualSystem === 'mixed' || actualSystem === 'mixed-full' || actualSystem === 'mixed-goldsilver' || actualSystem === 'mixed-goldsilver-full')
       ? splitIntoGroups(eff.totalTeams, eff.groupSize, drawOrder)
       : [],
     [actualSystem, eff.totalTeams, eff.groupSize, drawOrder]
@@ -1262,13 +1383,23 @@ export default function TournamentBuilder() {
   };
 
   // Резолвит любой маркер команды в матче плей-офф в реальную команду {sid, name}
-  const resolveSlot = (marker) => {
+  // matchBracket — 'gold'|'silver'|null; проставляется вызывающей стороной из m.bracket
+  // (для рекурсивных Поб./Проигр.-ссылок — из bracket НАЙДЕННОГО матча, не текущего).
+  const resolveSlot = (marker, matchBracket) => {
     if (!marker || marker === 'BYE') return null;
     // СИД{N} — распределение семян
     const seedMatch = marker.match(/^СИД(\d+)$/);
     if (seedMatch) {
       const sd = +seedMatch[1];
-      if (actualSystem === 'mixed') {
+      if (matchBracket === 'gold' || matchBracket === 'silver') {
+        // Золото/серебро: ровно один сеяный на группу — сид N это группа N,
+        // место — 1-е для золота, 2-е для серебра.
+        const st = allStandings[sd - 1];
+        if (!st) return null;
+        const row = st.find((r) => r.place === (matchBracket === 'gold' ? 1 : 2));
+        return row ? { sid: row.sid, name: row.name } : null;
+      }
+      if (actualSystem === 'mixed' || actualSystem === 'mixed-full') {
         const ng = groups.length;
         const placeIdx = Math.ceil(sd / ng);
         const grIdx = ((sd - 1) % ng);
@@ -1286,7 +1417,7 @@ export default function TournamentBuilder() {
       if (!m) return null;
       const w = matchWinner(m.id);
       if (!w) return null;
-      return resolveSlot(w === 't1' ? m.t1 : m.t2);
+      return resolveSlot(w === 't1' ? m.t1 : m.t2, m.bracket);
     }
     // Проигр.М{id} — проигравший
     const loseMatch = marker.match(/^Проигр\.М(\d+)$/);
@@ -1295,7 +1426,7 @@ export default function TournamentBuilder() {
       if (!m) return null;
       const w = matchWinner(m.id);
       if (!w) return null;
-      return resolveSlot(w === 't1' ? m.t2 : m.t1);
+      return resolveSlot(w === 't1' ? m.t2 : m.t1, m.bracket);
     }
     return null;
   };
@@ -1310,11 +1441,14 @@ export default function TournamentBuilder() {
       return teamName(sd);
     }
     // playoff — сначала пробуем резолвить, если не выходит показываем raw-плейсхолдер
-    const resolved = resolveSlot(raw);
+    const resolved = resolveSlot(raw, m.bracket);
     if (resolved) return resolved.name;
     // Показываем понятный плейсхолдер
     const seed = raw.match(/^СИД(\d+)$/);
-    if (seed && actualSystem === 'mixed') {
+    if (seed && (m.bracket === 'gold' || m.bracket === 'silver')) {
+      return `${m.bracket === 'gold' ? '1-е' : '2-е'} Гр.${+seed[1]}`;
+    }
+    if (seed && (actualSystem === 'mixed' || actualSystem === 'mixed-full')) {
       const sd = +seed[1];
       const ng = groups.length;
       const placeIdx = Math.ceil(sd / ng);
@@ -1437,8 +1571,14 @@ export default function TournamentBuilder() {
     }).catch((e) => console.error('online score sync failed', e));
   };
 
-  const sysLabel = (s) => ({ group: 'Групповая', playoff: 'Плей-офф', mixed: 'Смешанная' }[s] || s);
-  const sysColor = (s) => ({ group: 'bg-[#f5f2ec] text-black border border-black/10', playoff: 'bg-[#e30613]/10 text-[#b1040f] border border-[#e30613]/25', mixed: 'bg-black text-white' }[s] || 'bg-[#f5f2ec]');
+  const sysLabel = (s) => SYS_LABELS[s] || s;
+  const isMixedFamily = (s) => s === 'mixed' || s === 'mixed-full' || s === 'mixed-goldsilver' || s === 'mixed-goldsilver-full';
+  const sysColor = (s) => (
+    s === 'group' ? 'bg-[#f5f2ec] text-black border border-black/10'
+    : s === 'playoff' || s === 'playoff-full' ? 'bg-[#e30613]/10 text-[#b1040f] border border-[#e30613]/25'
+    : isMixedFamily(s) ? 'bg-black text-white'
+    : 'bg-[#f5f2ec]'
+  );
  const durStatus = slotDur < 25 ? 'tight' : slotDur > 70 ? 'loose' : 'ok';
 
   // === СУДЕЙСКИЙ РЕЖИМ ===
@@ -1456,8 +1596,8 @@ export default function TournamentBuilder() {
         sid1 = sidOf(gi, parseInt(m.t1.split('.')[1]));
         sid2 = sidOf(gi, parseInt(m.t2.split('.')[1]));
       } else {
-        const r1 = resolveSlot(m.t1);
-        const r2 = resolveSlot(m.t2);
+        const r1 = resolveSlot(m.t1, m.bracket);
+        const r2 = resolveSlot(m.t2, m.bracket);
         sid1 = r1 ? r1.sid : null;
         sid2 = r2 ? r2.sid : null;
       }
@@ -1593,18 +1733,22 @@ export default function TournamentBuilder() {
  <option value="auto">⚡ Авто (рекомендация)</option>
  <option value="group">Групповая</option>
  <option value="playoff">Плей-офф (олимпийка)</option>
+ <option value="playoff-full">Плей-офф (розыгрыш всех мест)</option>
  <option value="mixed">Смешанная</option>
+ <option value="mixed-full">Смешанная (розыгрыш всех мест)</option>
+ <option value="mixed-goldsilver">Смешанная (золото/серебро, на вылет)</option>
+ <option value="mixed-goldsilver-full">Смешанная (золото/серебро, все места)</option>
  </select>
  </Field>
 
- {(actualSystem === 'group' || actualSystem === 'mixed') && (
+ {(actualSystem === 'group' || actualSystem === 'mixed' || actualSystem === 'mixed-full' || actualSystem === 'mixed-goldsilver' || actualSystem === 'mixed-goldsilver-full') && (
  <Field label="Команд в группе">
  <select value={actualGroupSize} disabled={params.system === 'auto'} onChange={(e) => setParams({ ...params, groupSize: +e.target.value })} className="inp disabled:bg-[#f5f2ec] disabled:text-neutral-500">
  {[3,4,5,6,7,8,9,10,11,12,13,14,15,16].map((n) => <option key={n} value={n}>{n}</option>)}
  </select>
  </Field>
  )}
- {(actualSystem === 'group' || actualSystem === 'mixed') && (
+ {(actualSystem === 'group' || actualSystem === 'mixed' || actualSystem === 'mixed-full' || actualSystem === 'mixed-goldsilver' || actualSystem === 'mixed-goldsilver-full') && (
  <Field label="Жеребьёвка">
  <div className="flex gap-2 items-center">
  <select value={params.drawMode || 'sequential'} onChange={(e) => setParams({ ...params, drawMode: e.target.value })} className="inp flex-1">
@@ -1625,7 +1769,7 @@ export default function TournamentBuilder() {
  {drawOrder && <div className="text-[10px] text-neutral-400 mt-1">Жеребьёвка проведена — состав групп зафиксирован ниже</div>}
  </Field>
  )}
- {actualSystem === 'mixed' && (
+ {(actualSystem === 'mixed' || actualSystem === 'mixed-full') && (
  <Field label="Из группы в плей-офф">
  <select value={actualAdvance} disabled={params.system === 'auto'} onChange={(e) => setParams({ ...params, advance: +e.target.value })} className="inp disabled:bg-[#f5f2ec] disabled:text-neutral-500">
  {Array.from({length:16},(_,i)=>i+1).filter((n) => n <= actualGroupSize).map((n) => <option key={n} value={n}>топ-{n}</option>)}
@@ -1740,7 +1884,7 @@ export default function TournamentBuilder() {
  <div className="bg-white rounded border border-black/10 p-5">
  <h2 className="text-xs font-black text-[#0c0c0c] mb-4 uppercase tracking-widest">Структура</h2>
  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
- <Metric label="Система" value={sysLabel(actualSystem)} colorClass={sysColor(actualSystem)} inverted={actualSystem === 'mixed'} />
+ <Metric label="Система" value={sysLabel(actualSystem)} colorClass={sysColor(actualSystem)} inverted={isMixedFamily(actualSystem)} />
  <Metric label="Матчей" value={matches.length} />
  <Metric label="Слотов" value={totalUsedSlots} />
  <Metric label="Слот" value={`${slotDur} мин`} warning={durStatus !== 'ok'} />
@@ -1811,9 +1955,9 @@ export default function TournamentBuilder() {
  <div className="space-y-1">
  <div>📋 <strong>Параметры</strong> + инструкция</div>
  <div>📅 <strong>Расписание</strong> по полям</div>
- {(actualSystem === 'group' || actualSystem === 'mixed') && <div>👥 <strong>Группы</strong> — впишите названия команд</div>}
- {(actualSystem === 'group' || actualSystem === 'mixed') && <div>📊 <strong>Шахматки</strong> — вписываете голы → очки и места сами</div>}
- {(actualSystem === 'playoff' || actualSystem === 'mixed') && <div>🏆 <strong>Плей-офф</strong> — вписываете голы → победители проходят сами</div>}
+ {(actualSystem === 'group' || actualSystem === 'mixed' || actualSystem === 'mixed-full' || actualSystem === 'mixed-goldsilver' || actualSystem === 'mixed-goldsilver-full') && <div>👥 <strong>Группы</strong> — впишите названия команд</div>}
+ {(actualSystem === 'group' || actualSystem === 'mixed' || actualSystem === 'mixed-full' || actualSystem === 'mixed-goldsilver' || actualSystem === 'mixed-goldsilver-full') && <div>📊 <strong>Шахматки</strong> — вписываете голы → очки и места сами</div>}
+ {actualSystem !== 'group' && <div>🏆 <strong>Плей-офф</strong> — вписываете голы → победители проходят сами</div>}
  </div>
  </div>
  </div>
@@ -1966,6 +2110,61 @@ function Metric({ label, value, colorClass, warning, inverted }) {
  <div className={`text-base font-black mt-0.5 ${inverted ? 'text-white' : 'text-[#0c0c0c]'}`}>{value}</div>
  </div>
  );
+}
+
+// Один блок плей-офф (заголовок + список матчей) — переиспользуется и для одиночной
+// сетки, и для золотой/серебряной (тогда рендерится дважды с разным заголовком/списком).
+function PlayoffBracketBlock({ title, poMatches, scores, teamColors, teamLabel, resolveSlot, setScoreModal, setProtocolModal, setQrModal }) {
+  return (
+    <div className="bg-white border border-black/10">
+      <div className="px-4 py-3 bg-[#e30613] text-white flex items-baseline justify-between">
+        <h3 className="font-black uppercase tracking-widest text-xs">{title}</h3>
+        <div className="text-[10px] font-bold tracking-widest text-white/70 uppercase">{poMatches.filter((m) => scores[m.id]).length} / {poMatches.length}</div>
+      </div>
+      <div className="divide-y divide-black/5">
+        {poMatches.map((m) => {
+          const sc = scores[m.id];
+          const played = sc && sc.a != null && sc.b != null;
+          const t1 = teamLabel(m, 't1'), t2 = teamLabel(m, 't2');
+          const resolved1 = resolveSlot ? resolveSlot(m.t1, m.bracket) : null;
+          const resolved2 = resolveSlot ? resolveSlot(m.t2, m.bracket) : null;
+          const sd1 = resolved1 ? resolved1.sid : null;
+          const sd2 = resolved2 ? resolved2.sid : null;
+          return (
+            <div key={m.id} className="flex items-stretch hover:bg-[#f5f2ec] transition">
+              <button onClick={() => setScoreModal({ matchId: m.id, sid1: sd1, sid2: sd2, t1Label: t1, t2Label: t2, matchLabel: m.roundName + (m.isBronze ? ' (бронза)' : '') })}
+                className="flex-1 flex items-center gap-2 sm:gap-3 p-3 text-left min-w-0">
+                <div className="text-[10px] font-bold uppercase text-neutral-400 tracking-wider w-16 sm:w-20 flex-shrink-0">{m.roundName}{m.isBronze ? ' 🥉' : m.roundName === 'Финал' ? ' 🏆' : ''}</div>
+                <div className="flex-1 flex items-center justify-between gap-3 min-w-0">
+                  <span className={`text-sm font-medium truncate flex items-center gap-1.5 ${played && sc.a > sc.b ? 'font-black text-[#0c0c0c]' : played && sc.a < sc.b ? 'text-neutral-500' : ''}`}>
+                    {sd1 && teamColors[sd1] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd1] }} />}
+                    <span className="truncate">{t1}</span>
+                  </span>
+                  {played ? (
+                    <span className="font-black text-base sm:text-lg tracking-tight flex-shrink-0">{sc.a}:{sc.b}</span>
+                  ) : (
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 flex-shrink-0">–:–</span>
+                  )}
+                  <span className={`text-sm font-medium truncate text-right flex items-center gap-1.5 justify-end ${played && sc.b > sc.a ? 'font-black text-[#0c0c0c]' : played && sc.b < sc.a ? 'text-neutral-500' : ''}`}>
+                    <span className="truncate">{t2}</span>
+                    {sd2 && teamColors[sd2] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd2] }} />}
+                  </span>
+                </div>
+              </button>
+              <button onClick={() => setProtocolModal({ matchId: m.id, matchLabel: m.roundName + (m.isBronze ? ' (бронза)' : ''), t1Label: t1, t2Label: t2, sid1, sid2 })}
+                className="w-11 flex items-center justify-center text-neutral-400 hover:text-[#e30613] border-l border-black/5" title="Печатный протокол">
+                <span className="text-lg">🖨</span>
+              </button>
+              <button onClick={() => setQrModal({ matchId: m.id, matchLabel: m.roundName + (m.isBronze ? ' (бронза)' : '') })}
+                className="w-11 flex items-center justify-center text-neutral-400 hover:text-[#e30613] border-l border-black/5" title="QR для судьи">
+                <span className="text-lg">▦</span>
+              </button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 }
 
 // ============ ЭКРАН «ТУРНИР» ============
@@ -2132,56 +2331,20 @@ function TournamentView({ groups, matches, scores, setScores, teamNames, setTeam
         );
       })}
 
-      {/* Плей-офф */}
-      {poMatches.length > 0 && (
-        <div className="bg-white border border-black/10">
-          <div className="px-4 py-3 bg-[#e30613] text-white flex items-baseline justify-between">
-            <h3 className="font-black uppercase tracking-widest text-xs">🏆 Плей-офф</h3>
-            <div className="text-[10px] font-bold tracking-widest text-white/70 uppercase">{poMatches.filter((m) => scores[m.id]).length} / {poMatches.length}</div>
-          </div>
-          <div className="divide-y divide-black/5">
-            {poMatches.map((m) => {
-              const sc = scores[m.id];
-              const played = sc && sc.a != null && sc.b != null;
-              const t1 = teamLabel(m, 't1'), t2 = teamLabel(m, 't2');
-              const resolved1 = resolveSlot ? resolveSlot(m.t1) : null;
-              const resolved2 = resolveSlot ? resolveSlot(m.t2) : null;
-              const sd1 = resolved1 ? resolved1.sid : null;
-              const sd2 = resolved2 ? resolved2.sid : null;
-              return (
-                <div key={m.id} className="flex items-stretch hover:bg-[#f5f2ec] transition">
-                  <button onClick={() => setScoreModal({ matchId: m.id, sid1: sd1, sid2: sd2, t1Label: t1, t2Label: t2, matchLabel: m.roundName + (m.isBronze ? ' (бронза)' : '') })}
-                    className="flex-1 flex items-center gap-2 sm:gap-3 p-3 text-left min-w-0">
-                    <div className="text-[10px] font-bold uppercase text-neutral-400 tracking-wider w-16 sm:w-20 flex-shrink-0">{m.roundName}{m.isBronze ? ' 🥉' : m.roundName === 'Финал' ? ' 🏆' : ''}</div>
-                    <div className="flex-1 flex items-center justify-between gap-3 min-w-0">
-                      <span className={`text-sm font-medium truncate flex items-center gap-1.5 ${played && sc.a > sc.b ? 'font-black text-[#0c0c0c]' : played && sc.a < sc.b ? 'text-neutral-500' : ''}`}>
-                        {sd1 && teamColors[sd1] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd1] }} />}
-                        <span className="truncate">{t1}</span>
-                      </span>
-                      {played ? (
-                        <span className="font-black text-base sm:text-lg tracking-tight flex-shrink-0">{sc.a}:{sc.b}</span>
-                      ) : (
-                        <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 flex-shrink-0">–:–</span>
-                      )}
-                      <span className={`text-sm font-medium truncate text-right flex items-center gap-1.5 justify-end ${played && sc.b > sc.a ? 'font-black text-[#0c0c0c]' : played && sc.b < sc.a ? 'text-neutral-500' : ''}`}>
-                        <span className="truncate">{t2}</span>
-                        {sd2 && teamColors[sd2] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd2] }} />}
-                      </span>
-                    </div>
-                  </button>
-                  <button onClick={() => setProtocolModal({ matchId: m.id, matchLabel: m.roundName + (m.isBronze ? ' (бронза)' : ''), t1Label: t1, t2Label: t2, sid1, sid2 })}
-                    className="w-11 flex items-center justify-center text-neutral-400 hover:text-[#e30613] border-l border-black/5" title="Печатный протокол">
-                    <span className="text-lg">🖨</span>
-                  </button>
-                  <button onClick={() => setQrModal({ matchId: m.id, matchLabel: m.roundName + (m.isBronze ? ' (бронза)' : '') })}
-                    className="w-11 flex items-center justify-center text-neutral-400 hover:text-[#e30613] border-l border-black/5" title="QR для судьи">
-                    <span className="text-lg">▦</span>
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+      {/* Плей-офф — если есть золото/серебро, разбиваем на две отдельные сетки */}
+      {poMatches.length > 0 && (poMatches.some((m) => m.bracket === 'gold') || poMatches.some((m) => m.bracket === 'silver')) ? (
+        ['gold', 'silver'].map((bracketKey) => {
+          const bMatches = poMatches.filter((m) => m.bracket === bracketKey);
+          if (bMatches.length === 0) return null;
+          return (
+            <PlayoffBracketBlock key={bracketKey} title={bracketKey === 'gold' ? '🥇 Золотой плей-офф' : '🥈 Серебряный плей-офф'}
+              poMatches={bMatches} scores={scores} teamColors={teamColors} teamLabel={teamLabel} resolveSlot={resolveSlot}
+              setScoreModal={setScoreModal} setProtocolModal={setProtocolModal} setQrModal={setQrModal} />
+          );
+        })
+      ) : poMatches.length > 0 && (
+        <PlayoffBracketBlock title="🏆 Плей-офф" poMatches={poMatches} scores={scores} teamColors={teamColors} teamLabel={teamLabel}
+          resolveSlot={resolveSlot} setScoreModal={setScoreModal} setProtocolModal={setProtocolModal} setQrModal={setQrModal} />
       )}
 
       {/* Сброс */}
@@ -2428,8 +2591,9 @@ function ResultsView({ groups, allStandings, matches, scores, teamColors, teamNa
     return s && s.a != null && s.b != null;
   }).length;
   const done = totalMatches > 0 && playedMatches === totalMatches;
-  // Победитель финала
-  const finalMatch = poMatches.find((m) => m.roundName === 'Финал');
+  // Победитель финала. В золото/серебро смотрим только на золотую сетку — она даёт медали.
+  const medalMatches = poMatches.some((m) => m.bracket === 'gold') ? poMatches.filter((m) => m.bracket === 'gold') : poMatches;
+  const finalMatch = medalMatches.find((m) => m.roundName === 'Финал');
   let winner = null, silver = null, bronze = null;
   if (finalMatch) {
     const sc = scores[finalMatch.id];
@@ -2439,7 +2603,7 @@ function ResultsView({ groups, allStandings, matches, scores, teamColors, teamNa
       winner = teamLabel(finalMatch, wSide);
       silver = teamLabel(finalMatch, lSide);
     }
-    const bronzeMatch = poMatches.find((m) => m.isBronze);
+    const bronzeMatch = medalMatches.find((m) => m.isBronze || m.roundName === 'За 3-4 место');
     if (bronzeMatch) {
       const bsc = scores[bronzeMatch.id];
       if (bsc && bsc.a != null && bsc.b != null && bsc.a !== bsc.b) {
@@ -2551,7 +2715,7 @@ function ResultsView({ groups, allStandings, matches, scores, teamColors, teamNa
                   const played = sc && sc.a != null && sc.b != null;
                   return (
                     <tr key={m.id} className="border-b border-black/5">
-                      <td className="p-2 text-[10px] font-bold uppercase tracking-wider text-neutral-500 w-24">{m.roundName}{m.isBronze ? ' 🥉' : m.roundName === 'Финал' ? ' 🏆' : ''}</td>
+                      <td className="p-2 text-[10px] font-bold uppercase tracking-wider text-neutral-500 w-24">{m.bracket === 'gold' ? '🥇 ' : m.bracket === 'silver' ? '🥈 ' : ''}{m.roundName}{m.isBronze ? ' 🥉' : m.roundName === 'Финал' ? ' 🏆' : ''}</td>
                       <td className="p-2 font-medium text-right w-2/5">{teamLabel(m, 't1')}</td>
                       <td className="p-2 text-center font-black tabular-nums w-16">{played ? `${sc.a}:${sc.b}` : '–:–'}</td>
                       <td className="p-2 font-medium w-2/5">{teamLabel(m, 't2')}</td>
