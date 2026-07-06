@@ -780,7 +780,12 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
 
   // ===== ЛИСТ: Расписание =====
   // Каждая ячейка матча — формула с настоящими именами через ссылки.
+  // У каждого поля — 2 колонки: "Матч" (формула) и "Судья" (обычное значение +
+  // выпадающий список Excel, см. патч dataValidations в конце функции).
   // Слоты глобальные и сквозные; день = floor(slotIdx / slotsPerDay), время = startTime + localSlot*slotDur.
+  let scheduleRefereeCols = [];
+  let scheduleFirstDataRow = null;
+  let scheduleLastDataRow = null;
   {
     const slotMap = {};
     schedule.forEach((s) => {
@@ -789,22 +794,28 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
     });
     const sorted = Object.keys(slotMap).map(Number).sort((a, b) => a - b);
     const slotsPerDay = structure.slotsPerDay;
+    const totalCols = 3 + fields * 2;
 
     const ws = {};
     let R = 1;
     setCell(ws, `A${R}`, { v: 'РАСПИСАНИЕ', s: STYLES.pageTitle });
     R++;
     const totalDays = sorted.length === 0 ? 1 : Math.floor(sorted[sorted.length-1] / slotsPerDay) + 1;
-    setCell(ws, `A${R}`, { v: `Старт ${startTime} · слот ${slotDur} мин · полей ${fields} · дней ${totalDays}. Времена и имена команд считаются автоматически.`, s: STYLES.instruction });
+    setCell(ws, `A${R}`, { v: `Старт ${startTime} · слот ${slotDur} мин · полей ${fields} · дней ${totalDays}. Времена и имена команд считаются автоматически. Судью можно выбрать из списка в колонке «Судья».`, s: STYLES.instruction });
     R += 2;
     const headerRow = R;
     setCell(ws, `B${headerRow}`, { v: 'Слот', s: STYLES.tableHeader });
     setCell(ws, `C${headerRow}`, { v: 'Время', s: STYLES.tableHeader });
-    for (let f = 0; f < fields; f++) setCell(ws, `${COL(4 + f)}${headerRow}`, { v: fieldNames[f + 1] || `Поле ${f + 1}`, s: STYLES.tableHeader });
+    for (let f = 0; f < fields; f++) {
+      const matchCol = 4 + f * 2;
+      setCell(ws, `${COL(matchCol)}${headerRow}`, { v: fieldNames[f + 1] || `Поле ${f + 1}`, s: STYLES.tableHeader });
+      setCell(ws, `${COL(matchCol + 1)}${headerRow}`, { v: 'Судья', s: STYLES.tableHeader });
+      scheduleRefereeCols.push(COL(matchCol + 1));
+    }
     R++;
     const scheduleMerges = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 3 + fields - 1 } },
-      { s: { r: 1, c: 0 }, e: { r: 1, c: 3 + fields - 1 } },
+      { s: { r: 0, c: 0 }, e: { r: 0, c: totalCols - 1 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: totalCols - 1 } },
     ];
     let curDay = 0;
     let slotInDayCounter = 0;
@@ -820,22 +831,30 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
       // Разделитель дня
       if (day !== curDay) {
         setCell(ws, `A${R}`, { v: `ДЕНЬ ${day}`, s: STYLES.groupHeader });
-        for (let c = 1; c <= 3 + fields - 1; c++) setCell(ws, `${COL(c + 1)}${R}`, { v: '', s: STYLES.groupHeader });
-        scheduleMerges.push({ s: { r: R - 1, c: 0 }, e: { r: R - 1, c: 3 + fields - 1 } });
+        for (let c = 1; c <= totalCols - 1; c++) setCell(ws, `${COL(c + 1)}${R}`, { v: '', s: STYLES.groupHeader });
+        scheduleMerges.push({ s: { r: R - 1, c: 0 }, e: { r: R - 1, c: totalCols - 1 } });
         R++;
         curDay = day;
         slotInDayCounter = 0;
       }
       slotInDayCounter++;
+      if (scheduleFirstDataRow == null) scheduleFirstDataRow = R;
+      scheduleLastDataRow = R;
       const dayStartTime = (dInfos[day - 1] || dInfos[0]).startTime;
       const tStart = minToTime(timeToMin(dayStartTime) + localSlot * slotDur);
       const tEnd = minToTime(timeToMin(dayStartTime) + (localSlot + 1) * slotDur);
       setCell(ws, `B${R}`, { v: slotInDayCounter, s: STYLES.cell });
       setCell(ws, `C${R}`, { v: `${tStart}–${tEnd}`, s: { ...STYLES.cell, font: { name: 'Consolas' } } });
       for (let f = 1; f <= fields; f++) {
-        const addr = `${COL(3 + f)}${R}`;
+        const matchCol = 3 + (f - 1) * 2 + 1;
+        const addr = `${COL(matchCol)}${R}`;
+        const refAddr = `${COL(matchCol + 1)}${R}`;
         const m = slotMap[slotIdx][f];
-        if (!m) { setCell(ws, addr, { v: '', s: STYLES.cell }); continue; }
+        if (!m) {
+          setCell(ws, addr, { v: '', s: STYLES.cell });
+          setCell(ws, refAddr, { v: '', s: STYLES.cell });
+          continue;
+        }
         // Получаем ссылки на имена команд
         let t1Ref, t2Ref;
         if (m.phase === 'group') {
@@ -849,15 +868,15 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
         }
         const label = m.label;
         const isPo = m.phase === 'playoff';
-        const refName = refereeLabelFor(m.id);
-        const refSuffix = refName ? ` & " · Судья: ${refName.replace(/"/g, "'")}"` : '';
-        const f1 = `"${label}: " & IF(${t1Ref}="","?",${t1Ref}) & " — " & IF(${t2Ref}="","?",${t2Ref})${refSuffix}`;
+        const f1 = `"${label}: " & IF(${t1Ref}="","?",${t1Ref}) & " — " & IF(${t2Ref}="","?",${t2Ref})`;
         setCell(ws, addr, { f: f1, s: isPo ? { ...STYLES.cell, fill: { fgColor: { rgb: 'FCE1E3' } }, font: { bold: true, color: { rgb: 'B1040F' } } } : STYLES.cell });
+        const refName = refereeLabelFor(m.id);
+        setCell(ws, refAddr, { v: refName || '', s: STYLES.cell });
       }
       R++;
     });
-    ws['!ref'] = `A1:${COL(3 + fields)}${R}`;
-    ws['!cols'] = [{ wch: 3 }, { wch: 6 }, { wch: 13 }, ...Array(fields).fill({ wch: 38 })];
+    ws['!ref'] = `A1:${COL(totalCols)}${R}`;
+    ws['!cols'] = [{ wch: 3 }, { wch: 6 }, { wch: 13 }, ...Array(fields).fill([{ wch: 34 }, { wch: 18 }]).flat()];
     ws['!merges'] = scheduleMerges;
     XLSX.utils.book_append_sheet(wb, ws, 'Расписание');
   }
@@ -969,6 +988,41 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
     patchedXml = workbookXml.replace('</workbook>', '<calcPr fullCalcOnLoad="1"/></workbook>');
   }
   zip['xl/workbook.xml'] = fflate.strToU8(patchedXml);
+
+  // Настоящий выпадающий список Excel (Data Validation) в колонках «Судья» листа
+  // «Расписание» — со списком судей из реестра. xlsx-js-style не умеет писать
+  // dataValidations через JS API, поэтому патчим XML листа напрямую (тот же приём,
+  // что и calcPr выше): находим r:id листа «Расписание» в workbook.xml, по нему —
+  // физический файл листа в workbook.xml.rels, и вставляем <dataValidations>.
+  const refereeList = Object.values(refereeNamesMap).map((n) => String(n).replace(/[",]/g, ' ').trim()).filter(Boolean);
+  if (refereeList.length > 0 && scheduleRefereeCols.length > 0 && scheduleFirstDataRow != null) {
+    const escXml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const listFormula = escXml(`"${refereeList.join(',')}"`);
+    if (listFormula.length <= 255) {
+      const sheetTags = workbookXml.match(/<sheet\b[^>]*\/>/g) || [];
+      const scheduleTag = sheetTags.find((t) => /name="Расписание"/.test(t));
+      const ridMatch = scheduleTag && scheduleTag.match(/r:id="([^"]+)"/);
+      const rid = ridMatch && ridMatch[1];
+      const relsXml = zip['xl/_rels/workbook.xml.rels'] ? fflate.strFromU8(zip['xl/_rels/workbook.xml.rels']) : '';
+      const relTags = relsXml.match(/<Relationship\b[^>]*\/>/g) || [];
+      const relTag = rid && relTags.find((t) => t.includes(`Id="${rid}"`));
+      const targetMatch = relTag && relTag.match(/Target="worksheets\/([^"]+)"/);
+      const sheetFile = targetMatch && `xl/worksheets/${targetMatch[1]}`;
+      if (sheetFile && zip[sheetFile]) {
+        const sqref = scheduleRefereeCols.map((c) => `${c}${scheduleFirstDataRow}:${c}${scheduleLastDataRow}`).join(' ');
+        const dataValidationsXml = `<dataValidations count="1"><dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1" sqref="${sqref}"><formula1>${listFormula}</formula1></dataValidation></dataValidations>`;
+        const sheetXml = fflate.strFromU8(zip[sheetFile]);
+        let patchedSheetXml;
+        if (/<pageMargins\b/.test(sheetXml)) {
+          patchedSheetXml = sheetXml.replace(/<pageMargins\b/, `${dataValidationsXml}<pageMargins`);
+        } else {
+          patchedSheetXml = sheetXml.replace('</worksheet>', `${dataValidationsXml}</worksheet>`);
+        }
+        zip[sheetFile] = fflate.strToU8(patchedSheetXml);
+      }
+    }
+  }
+
   const newZipBytes = fflate.zipSync(zip);
 
   // Скачать как Blob
