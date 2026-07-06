@@ -848,31 +848,51 @@ const getDayWindow = (dayNum, params) => {
 // Принимает реальные matches и schedule, чтобы получить точное число слотов с учётом
 // упаковки (конфликты команд, разделители раундов плей-офф).
 const computeStructure = (params, matches, schedule, slotDurOverride) => {
-  const { totalTeams, system, groupSize, advance, fields } = params;
-  const days = Math.max(1, params.days || 1);
+  const { totalTeams, system, groupSize, advance, fields, scheduleMode, maxGamesPerDay } = params;
+  let days = Math.max(1, params.days || 1);
   const games = matches.length;
   const slotsNeeded = schedule.length === 0 ? 0 : Math.max(...schedule.map((s) => s.slotIdx)) + 1;
 
-  // Считаем availMin по каждому дню (могут быть разные окна)
-  const dayInfos = [];
-  for (let d = 1; d <= days; d++) dayInfos.push(getDayWindow(d, params));
-  const totalAvailMin = dayInfos.reduce((s, d) => s + d.availMin, 0);
-  const avgAvailMin = totalAvailMin / days;
+  const dayInfosFor = (n) => { const a = []; for (let d = 1; d <= n; d++) a.push(getDayWindow(d, params)); return a; };
 
-  // Подбор matchDur: чтобы sum(floor(availMin_d / matchDur)) >= slotsNeeded
-  const totalSlotsAt = (dur) => dayInfos.reduce((s, d) => s + Math.max(1, Math.floor(d.availMin / dur)), 0);
+  // Режим «по дням»: организатор задаёт лимит игр в день, а не число дней —
+  // количество дней растёт само, пока не наберётся достаточно слотов.
+  const byDay = scheduleMode === 'byDay' && maxGamesPerDay > 0;
+  const slotsPerDayCap = byDay ? Math.max(1, Math.ceil(maxGamesPerDay / Math.max(1, fields))) : Infinity;
+
   let matchDur = slotDurOverride;
   if (!matchDur) {
-    matchDur = Math.max(15, Math.floor(totalAvailMin / Math.max(1, slotsNeeded)));
-    // Уменьшаем пока не влезаем в дни
-    while (matchDur > 15 && totalSlotsAt(matchDur) < slotsNeeded) matchDur--;
-    // Или увеличиваем пока не влезаем в дни, но не более 200
-    while (matchDur < 200 && totalSlotsAt(matchDur) < slotsNeeded) matchDur++;
-    matchDur = Math.max(15, matchDur);
+    if (byDay) {
+      // Длительность подбираем под лимит игр в день, а не под число дней —
+      // иначе оценка «сколько дней нужно» ниже была бы противоречивой.
+      const firstDayInfo = getDayWindow(1, params);
+      matchDur = Math.max(15, Math.min(200, Math.floor(firstDayInfo.availMin / slotsPerDayCap)));
+    } else {
+      const dayInfos0 = dayInfosFor(days);
+      const totalAvailMin = dayInfos0.reduce((s, d) => s + d.availMin, 0);
+      const totalSlotsAt = (dur) => dayInfos0.reduce((s, d) => s + Math.max(1, Math.floor(d.availMin / dur)), 0);
+      matchDur = Math.max(15, Math.floor(totalAvailMin / Math.max(1, slotsNeeded)));
+      // Уменьшаем пока не влезаем в дни
+      while (matchDur > 15 && totalSlotsAt(matchDur) < slotsNeeded) matchDur--;
+      // Или увеличиваем пока не влезаем в дни, но не более 200
+      while (matchDur < 200 && totalSlotsAt(matchDur) < slotsNeeded) matchDur++;
+      matchDur = Math.max(15, matchDur);
+    }
   }
 
-  // Массив слотов в каждом дне с учётом финального matchDur
-  const slotsInDay = dayInfos.map((d) => Math.max(1, Math.floor(d.availMin / matchDur)));
+  if (byDay) {
+    // Растим число дней, пока (лимит игр в день → слотов в день) не покроет все матчи
+    while (days < 60) {
+      const infos = dayInfosFor(days);
+      const cap = infos.reduce((s, d) => s + Math.min(slotsPerDayCap, Math.max(1, Math.floor(d.availMin / matchDur))), 0);
+      if (cap >= slotsNeeded) break;
+      days++;
+    }
+  }
+
+  // Массив слотов в каждом дне с учётом финального matchDur (и лимита игр/день, если задан)
+  const dayInfos = dayInfosFor(days);
+  const slotsInDay = dayInfos.map((d) => Math.min(slotsPerDayCap, Math.max(1, Math.floor(d.availMin / matchDur))));
   const dayOffsets = [0];
   for (let d = 0; d < days - 1; d++) dayOffsets.push(dayOffsets[d] + slotsInDay[d]);
   const totalSlots = slotsInDay.reduce((s, x) => s + x, 0);
@@ -973,6 +993,7 @@ export default function TournamentBuilder() {
   const [params, setParams] = useState({
     totalTeams: 20, fields: 2, startTime: '10:00', endTime: '20:00',
     system: 'auto', groupSize: 4, advance: 2, days: 1,
+    scheduleMode: 'sequential', restMode: 'auto', maxGamesPerDay: null,
   });
   const [matchDurMode, setMatchDurMode] = useState('auto');
   const [manualDur, setManualDur] = useState(40);
@@ -1011,7 +1032,12 @@ export default function TournamentBuilder() {
       const raw = localStorage.getItem(tournamentDataKey(id));
       if (raw) saved = JSON.parse(raw);
     } catch (e) { console.error('load tournament failed', e); }
-    setParams(saved.params || { totalTeams: 20, fields: 2, startTime: '10:00', endTime: '20:00', system: 'auto', groupSize: 4, advance: 2, days: 1 });
+    setParams({
+      totalTeams: 20, fields: 2, startTime: '10:00', endTime: '20:00',
+      system: 'auto', groupSize: 4, advance: 2, days: 1,
+      scheduleMode: 'sequential', restMode: 'auto', maxGamesPerDay: null,
+      ...(saved.params || {}),
+    });
     setTeamNames(saved.teamNames || {});
     setTeamColors(saved.teamColors || {});
     setScores(saved.scores || {});
@@ -1113,10 +1139,14 @@ export default function TournamentBuilder() {
   const matches = useMemo(() => buildMatches(eff), [eff.totalTeams, eff.system, eff.groupSize, eff.advance]);
   // Первичное расписание без ограничений — нужно чтобы вычислить slotDur
   const baseSchedule = useMemo(() => scheduleMatches(matches, eff.fields, eff), [matches, eff.fields]);
-  const baseStruct = useMemo(() => computeStructure(eff, matches, baseSchedule), [matches, baseSchedule, eff.days, eff.startTime, eff.endTime, JSON.stringify(dayWindows)]);
+  const baseStruct = useMemo(() => computeStructure(eff, matches, baseSchedule), [matches, baseSchedule, eff.days, eff.startTime, eff.endTime, eff.fields, eff.scheduleMode, eff.maxGamesPerDay, JSON.stringify(dayWindows)]);
   const slotDur = matchDurMode === 'auto' ? baseStruct.matchDur : manualDur;
-  // Перерыв команды: сколько нужно пропустить слотов, чтобы прошло N минут
-  const minRestSlots = slotDur > 0 ? Math.ceil((minRest || 0) / slotDur) : 0;
+  // Перерыв команды применяется только в режиме расписания «с интервалом».
+  // Авто — гарантированно ровно 1 слот разрыва (команда не играет два раза подряд).
+  const effectiveMinRest = eff.scheduleMode === 'interval'
+    ? ((eff.restMode || 'auto') === 'auto' ? slotDur : (minRest || 0))
+    : 0;
+  const minRestSlots = slotDur > 0 ? Math.ceil((effectiveMinRest || 0) / slotDur) : 0;
   // Заблокированные слоты — превращаем время в глобальный индекс слота
   const slotsPerDay = baseStruct.slotsPerDay;
   const blockedSlotIdxs = useMemo(() => {
@@ -1269,7 +1299,9 @@ export default function TournamentBuilder() {
   const lastSlotIdx = sortedSlots.length ? sortedSlots[sortedSlots.length - 1] : 0;
   const lastPos = slotToDay(lastSlotIdx, dayOffsets, slotsInDay);
   const actualDaysNeeded = sortedSlots.length ? lastPos.day : 1;
-  const fits = actualDaysNeeded <= params.days;
+  // В режиме «по дням» число дней подбирается автоматически — там всегда «помещается».
+  const declaredDays = eff.scheduleMode === 'byDay' ? structure.days : params.days;
+  const fits = actualDaysNeeded <= declaredDays;
   // Время окончания последнего матча в его дне
   const lastDayStart = timeToMin((dayInfos[lastPos.day - 1] || dayInfos[0]).startTime);
   const finishMin = lastDayStart + (lastPos.local + 1) * slotDur;
@@ -1466,16 +1498,53 @@ export default function TournamentBuilder() {
  <BoundedNumber value={params.fields} min={1} max={20}
  onCommit={(n) => setParams({ ...params, fields: n })} />
  </Field>
+ {params.scheduleMode === 'byDay' ? (
+ <Field label="Дней (авто)">
+ <div className="inp bg-[#f5f2ec] text-neutral-500 flex items-center">{declaredDays}</div>
+ </Field>
+ ) : (
  <Field label="Дней">
  <BoundedNumber value={params.days} min={1} max={14}
  onCommit={(n) => setParams({ ...params, days: n })} />
  </Field>
+ )}
  </div>
  <div className="grid grid-cols-2 gap-2">
  <Field label="Начало"><input type="time" value={params.startTime} onChange={(e) => setParams({ ...params, startTime: e.target.value })} className="inp" /></Field>
  <Field label="Крайний срок"><input type="time" value={params.endTime} onChange={(e) => setParams({ ...params, endTime: e.target.value })} className="inp" /></Field>
  </div>
  <div className="text-xs text-neutral-500">Окно: {Math.floor(dayMin / 60)} ч {dayMin % 60} м · чистой игры ≈ {availMin} м</div>
+
+ <Field label="Расписание">
+ <select value={params.scheduleMode || 'sequential'} onChange={(e) => setParams({ ...params, scheduleMode: e.target.value })} className="inp">
+ <option value="sequential">Последовательное</option>
+ <option value="interval">С интервалом (не подряд)</option>
+ <option value="byDay">По дням (лимит игр в день)</option>
+ </select>
+ </Field>
+ {params.scheduleMode === 'interval' && (
+ <Field label="Интервал между матчами команды">
+ <div className="flex gap-2 items-center">
+ <select value={params.restMode || 'auto'} onChange={(e) => setParams({ ...params, restMode: e.target.value })} className="inp flex-1">
+ <option value="auto">Авто (не подряд)</option>
+ <option value="manual">Вручную</option>
+ </select>
+ {(params.restMode || 'auto') === 'manual' && (
+ <BoundedNumber value={minRest} min={0} max={120} onCommit={setMinRest} />
+ )}
+ </div>
+ </Field>
+ )}
+ {params.scheduleMode === 'byDay' && (
+ <Field label="Матчей в день">
+ <div className="flex gap-2 items-center">
+ <BoundedNumber value={params.maxGamesPerDay || Math.max(1, params.fields * 6)} min={1} max={200}
+ onCommit={(n) => setParams({ ...params, maxGamesPerDay: n })} />
+ <button type="button" onClick={() => setParams({ ...params, maxGamesPerDay: Math.max(1, params.fields * 6) })}
+ className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 hover:text-[#e30613] whitespace-nowrap">Авто</button>
+ </div>
+ </Field>
+ )}
 
  <Field label="Система">
  <select value={params.system} onChange={(e) => setParams({ ...params, system: e.target.value })} className="inp">
@@ -1534,9 +1603,6 @@ export default function TournamentBuilder() {
  <div className="bg-white border border-black/10 p-4 sm:p-5">
   <h2 className="text-xs font-black text-[#0c0c0c] mb-4 uppercase tracking-widest">Расширенные</h2>
   <div className="space-y-3">
-   <Field label="Перерыв между матчами команды (мин)">
-    <BoundedNumber value={minRest} min={0} max={120} onCommit={setMinRest} />
-   </Field>
    {eff.days > 1 && (
    <div>
     <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 mb-1.5">Своё окно для дней (опционально)</div>
@@ -1617,14 +1683,14 @@ export default function TournamentBuilder() {
  <Metric label="Слот" value={`${slotDur} мин`} warning={durStatus !== 'ok'} />
  {structure.numGroups > 0 && <Metric label="Групп" value={structure.numGroups} />}
  {structure.playoffTeams > 0 && <Metric label="В плей-офф" value={structure.playoffTeams} />}
- <Metric label="Нужно дней" value={`${actualDaysNeeded} из ${params.days}`} warning={!fits} />
+ <Metric label="Нужно дней" value={`${actualDaysNeeded} из ${declaredDays}`} warning={!fits} />
  <Metric label="Слотов в день" value={slotsPerDay} />
  <Metric label={actualDaysNeeded > 1 ? `Финиш (день ${actualDaysNeeded})` : 'Финиш'} value={finishTime} warning={finishMin > timeToMin(params.endTime)} />
  </div>
  {!fits && (
  <div className="mt-4 p-3 bg-[#e30613]/5 border border-[#e30613]/25 rounded text-sm text-[#b1040f] flex items-start gap-2">
  <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
- <div>Не помещается: нужно <strong>{actualDaysNeeded} дней</strong>, задано <strong>{params.days}</strong>. Увеличьте дней, полей или растяните дневное окно. Файл всё равно скачается — расписание просто длиннее.</div>
+ <div>Не помещается: нужно <strong>{actualDaysNeeded} дней</strong>, задано <strong>{declaredDays}</strong>. Увеличьте дней, полей или растяните дневное окно. Файл всё равно скачается — расписание просто длиннее.</div>
  </div>
  )}
  {durStatus === 'tight' && fits && (
