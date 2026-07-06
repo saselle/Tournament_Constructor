@@ -2125,7 +2125,7 @@ export default function TournamentBuilder() {
  <tr key={m.id} className={`border-b border-slate-100 hover:bg-[#f5f2ec] ${po ? 'bg-[#e30613]/5' : ''}`}>
  <td className="py-2 px-2 font-medium text-neutral-500">Д{day}</td>
  <td className="py-2 px-2 font-mono text-neutral-700 text-xs sm:text-sm whitespace-nowrap">{time}</td>
- <td className="py-2 px-2 text-neutral-700">{field}</td>
+ <td className="py-2 px-2 text-neutral-700 whitespace-nowrap">{field}</td>
  <td className={`py-2 px-2 ${po ? 'text-[#b1040f] font-semibold' : 'text-neutral-700'}`}>{groupLabel}</td>
  <td className="py-2 px-2 text-[#0c0c0c]">{teamLabel(m, 't1')} — {teamLabel(m, 't2')}</td>
  <td className="py-2 px-2 font-black tabular-nums">{played ? `${sc.a}:${sc.b}` : <span className="text-neutral-300 font-normal">–:–</span>}</td>
