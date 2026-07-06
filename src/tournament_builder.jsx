@@ -1174,6 +1174,7 @@ export default function TournamentBuilder() {
   const [scoreModal, setScoreModal] = useState(null);
   const [importModal, setImportModal] = useState(false);
   const [qrModal, setQrModal] = useState(null); // { matchId, matchLabel }
+  const [showLiveQr, setShowLiveQr] = useState(false);
   const [protocolModal, setProtocolModal] = useState(null); // { matchId, matchLabel, t1Label, t2Label, sid1, sid2 }
 
   // «Личный кабинет»: список турниров + какой сейчас открыт
@@ -1519,6 +1520,18 @@ export default function TournamentBuilder() {
   const publishOnline = async () => {
     setPublishing(true);
     try {
+      // Время/поле каждого матча — для расписания на странице родителей.
+      const matchSchedule = {};
+      schedule.forEach((s) => {
+        const pos = slotToDay(s.slotIdx, dayOffsets, slotsInDay);
+        const dayStart = timeToMin((dayInfos[pos.day - 1] || dayInfos[0]).startTime);
+        matchSchedule[s.matchId] = {
+          day: pos.day,
+          startTime: minToTime(dayStart + pos.local * slotDur),
+          endTime: minToTime(dayStart + (pos.local + 1) * slotDur),
+          field: fieldNames[s.field] || `Поле ${s.field}`,
+        };
+      });
       const publishMatches = matches.map((m) => ({
         id: m.id,
         label: m.phase === 'group' ? m.label : (m.roundName + (m.isBronze ? ' (бронза)' : '')),
@@ -1528,6 +1541,8 @@ export default function TournamentBuilder() {
         group: m.group,
         roundName: m.roundName,
         isBronze: m.isBronze,
+        bracket: m.bracket || null,
+        schedule: matchSchedule[m.id] || null,
       }));
       const payload = { name: tournamentName, params: eff, teamNames, teamColors, matches: publishMatches, structure };
       const url = onlineId ? `${SYNC_BACKEND_URL}/api/tournaments/${onlineId}` : `${SYNC_BACKEND_URL}/api/tournaments`;
@@ -1631,6 +1646,8 @@ export default function TournamentBuilder() {
      <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-600 hidden sm:inline">🟢 Онлайн</span>
      <button onClick={() => { navigator.clipboard.writeText(`${SYNC_BACKEND_URL}/view/${onlineId}`); alert('Ссылка для родителей скопирована'); }}
        className="px-2.5 py-1.5 text-xs font-bold text-neutral-600 hover:text-[#0c0c0c] border border-black/10 rounded-sm">👀 Родителям</button>
+     <button onClick={() => setShowLiveQr(true)}
+       className="px-2.5 py-1.5 text-xs font-bold text-neutral-600 hover:text-[#0c0c0c] border border-black/10 rounded-sm" title="QR-код на живую трансляцию для родителей">▦ Live</button>
      <button onClick={publishOnline} disabled={publishing}
        className="px-2.5 py-1.5 text-xs font-bold text-neutral-600 hover:text-[#0c0c0c] border border-black/10 rounded-sm disabled:opacity-50" title="Обновить составы/сетку на сервере после нового раунда">
        {publishing ? '…' : '↻ Обновить'}
@@ -2080,6 +2097,13 @@ export default function TournamentBuilder() {
   onClose={() => setQrModal(null)} />
  )}
 
+ {/* Модалка QR-кода на живую трансляцию для родителей */}
+ {showLiveQr && onlineId && (
+ <QRModal matchLabel={tournamentName} kind="live"
+  judgeUrl={`${SYNC_BACKEND_URL}/view/${onlineId}`}
+  onClose={() => setShowLiveQr(false)} />
+ )}
+
  {/* Модалка печатного протокола */}
  {protocolModal && (
  <ProtocolModal
@@ -2525,18 +2549,22 @@ function ModalShell({ onClose, sheetClassName, children }) {
   );
 }
 
-function QRModal({ matchLabel, matchId, judgeUrl, onClose }) {
+function QRModal({ matchLabel, matchId, judgeUrl, kind = 'judge', title, description, onClose }) {
   const url = judgeUrl || `${window.location.origin}${window.location.pathname}?judge=${matchId}`;
   const copyLink = () => {
     try { navigator.clipboard.writeText(url); alert('Ссылка скопирована'); }
     catch { alert(url); }
   };
+  const modalTitle = title || (kind === 'live' ? 'QR трансляции' : 'QR для судьи');
+  const modalDesc = description || (kind === 'live'
+    ? 'Родители сканируют QR камерой телефона → сразу открывается живая трансляция турнира'
+    : 'Судья сканирует QR камерой телефона → сразу открывается ввод счёта только этого матча');
   return (
     <ModalShell onClose={onClose} sheetClassName="sm:max-w-sm">
       <div className="px-4 py-3 border-b border-black/10 flex items-center justify-between">
         <div>
           <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">{matchLabel}</div>
-          <div className="text-sm font-black">QR для судьи</div>
+          <div className="text-sm font-black">{modalTitle}</div>
         </div>
         <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-neutral-400 hover:text-[#0c0c0c] text-xl">×</button>
       </div>
@@ -2544,9 +2572,7 @@ function QRModal({ matchLabel, matchId, judgeUrl, onClose }) {
         <div className="border-4 border-[#0c0c0c] p-3">
           <QRCode text={url} size={220} />
         </div>
-        <div className="text-xs text-center text-neutral-600 leading-tight">
-          Судья сканирует QR камерой телефона → сразу открывается ввод счёта только этого матча
-        </div>
+        <div className="text-xs text-center text-neutral-600 leading-tight">{modalDesc}</div>
         <button onClick={copyLink} className="w-full py-3 bg-[#0c0c0c] text-white font-bold uppercase tracking-widest text-xs">📋 Копировать ссылку</button>
       </div>
     </ModalShell>
