@@ -785,6 +785,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
   // Слоты глобальные и сквозные; день = floor(slotIdx / slotsPerDay), время = startTime + localSlot*slotDur.
   let scheduleRefereeCols = [];
   let scheduleDataRows = [];
+  let scheduleRefereeListRange = null;
   {
     const slotMap = {};
     schedule.forEach((s) => {
@@ -873,10 +874,22 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
       }
       R++;
     });
-    ws['!ref'] = `A1:${COL(totalCols)}${R}`;
-    ws['!cols'] = [{ wch: 3 }, { wch: 6 }, { wch: 13 }, ...Array(fields).fill([{ wch: 34 }, { wch: 18 }]).flat()];
+    // Список судей — обычными ячейками (не "зашитый" в формулу), с запасом
+    // пустых строк. Data validation в колонках "Судья" ссылается на этот
+    // диапазон, поэтому судью можно добавить/переименовать прямо в Excel —
+    // выпадающий список обновится сам, без повторной генерации файла.
+    const listCol = totalCols + 2;
+    const namesForList = Object.values(refereeNamesMap).map((n) => String(n).trim()).filter(Boolean);
+    const listRowsCount = Math.max(namesForList.length + 20, 30);
+    setCell(ws, `${COL(listCol)}1`, { v: 'Судьи (список для выпадающего меню)', s: STYLES.tableHeader });
+    namesForList.forEach((name, i) => setCell(ws, `${COL(listCol)}${2 + i}`, { v: name, s: STYLES.cell }));
+    const refereeListRange = `'Расписание'!$${COL(listCol)}$2:$${COL(listCol)}$${1 + listRowsCount}`;
+
+    ws['!ref'] = `A1:${COL(listCol)}${Math.max(R, 1 + listRowsCount)}`;
+    ws['!cols'] = [{ wch: 3 }, { wch: 6 }, { wch: 13 }, ...Array(fields).fill([{ wch: 34 }, { wch: 18 }]).flat(), { wch: 2 }, { wch: 26 }];
     ws['!merges'] = scheduleMerges;
     XLSX.utils.book_append_sheet(wb, ws, 'Расписание');
+    scheduleRefereeListRange = refereeListRange;
   }
 
   // ===== ЛИСТ: Параметры (вставляем первым) =====
@@ -988,57 +1001,57 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
   zip['xl/workbook.xml'] = fflate.strToU8(patchedXml);
 
   // Настоящий выпадающий список Excel (Data Validation) в колонках «Судья» листа
-  // «Расписание» — со списком судей из реестра. xlsx-js-style не умеет писать
-  // dataValidations через JS API, поэтому патчим XML листа напрямую (тот же приём,
-  // что и calcPr выше): находим r:id листа «Расписание» в workbook.xml, по нему —
-  // физический файл листа в workbook.xml.rels, и вставляем <dataValidations>.
-  const refereeList = Object.values(refereeNamesMap).map((n) => String(n).replace(/[",]/g, ' ').trim()).filter(Boolean);
-  if (refereeList.length > 0 && scheduleRefereeCols.length > 0 && scheduleDataRows.length > 0) {
+  // «Расписание» — формула1 ссылается на диапазон обычных ячеек (список судей
+  // на том же листе), а не на "зашитый" текст, поэтому судью можно добавить
+  // или переименовать прямо в Excel — список обновится сам. xlsx-js-style не
+  // умеет писать dataValidations через JS API, поэтому патчим XML листа
+  // напрямую (тот же приём, что и calcPr выше): находим r:id листа
+  // «Расписание» в workbook.xml, по нему — физический файл листа в
+  // workbook.xml.rels, и вставляем <dataValidations>.
+  if (scheduleRefereeListRange && scheduleRefereeCols.length > 0 && scheduleDataRows.length > 0) {
     const escXml = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    const listFormula = escXml(`"${refereeList.join(',')}"`);
-    if (listFormula.length <= 255) {
-      const sheetTags = workbookXml.match(/<sheet\b[^>]*\/>/g) || [];
-      const scheduleTag = sheetTags.find((t) => /name="Расписание"/.test(t));
-      const ridMatch = scheduleTag && scheduleTag.match(/r:id="([^"]+)"/);
-      const rid = ridMatch && ridMatch[1];
-      const relsXml = zip['xl/_rels/workbook.xml.rels'] ? fflate.strFromU8(zip['xl/_rels/workbook.xml.rels']) : '';
-      const relTags = relsXml.match(/<Relationship\b[^>]*\/>/g) || [];
-      const relTag = rid && relTags.find((t) => t.includes(`Id="${rid}"`));
-      const targetMatch = relTag && relTag.match(/Target="worksheets\/([^"]+)"/);
-      const sheetFile = targetMatch && `xl/worksheets/${targetMatch[1]}`;
-      if (sheetFile && zip[sheetFile]) {
-        // Строим диапазоны ТОЛЬКО по реальным строкам матчей — между ними могут
-        // быть строки-разделители дня, объединённые (merge) на всю ширину листа;
-        // если включить их в sqref, Excel сочтёт файл повреждённым (валидация
-        // ссылалась бы на не-якорную ячейку объединённого диапазона).
-        const rowRanges = [];
-        let segStart = scheduleDataRows[0], segEnd = scheduleDataRows[0];
-        for (let i = 1; i < scheduleDataRows.length; i++) {
-          const row = scheduleDataRows[i];
-          if (row === segEnd + 1) { segEnd = row; }
-          else { rowRanges.push([segStart, segEnd]); segStart = row; segEnd = row; }
-        }
-        rowRanges.push([segStart, segEnd]);
-        const sqref = scheduleRefereeCols
-          .flatMap((c) => rowRanges.map(([a, b]) => (a === b ? `${c}${a}` : `${c}${a}:${c}${b}`)))
-          .join(' ');
-        const dataValidationsXml = `<dataValidations count="1"><dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1" sqref="${sqref}"><formula1>${listFormula}</formula1></dataValidation></dataValidations>`;
-        // Порядок элементов в CT_Worksheet строгий: dataValidations должен идти
-        // РАНЬШЕ hyperlinks/printOptions/pageMargins и РАНЬШЕ ignoredErrors —
-        // xlsx-js-style сам добавляет <ignoredErrors> (числа как текст) перед
-        // </worksheet>, и наивная вставка перед pageMargins/</worksheet> может
-        // оказаться ПОСЛЕ ignoredErrors, что и ломает файл.
-        const sheetXml = fflate.strFromU8(zip[sheetFile]);
-        let patchedSheetXml;
-        if (/<ignoredErrors\b/.test(sheetXml)) {
-          patchedSheetXml = sheetXml.replace(/<ignoredErrors\b/, `${dataValidationsXml}<ignoredErrors`);
-        } else if (/<pageMargins\b/.test(sheetXml)) {
-          patchedSheetXml = sheetXml.replace(/<pageMargins\b/, `${dataValidationsXml}<pageMargins`);
-        } else {
-          patchedSheetXml = sheetXml.replace('</worksheet>', `${dataValidationsXml}</worksheet>`);
-        }
-        zip[sheetFile] = fflate.strToU8(patchedSheetXml);
+    const listFormula = escXml(scheduleRefereeListRange);
+    const sheetTags = workbookXml.match(/<sheet\b[^>]*\/>/g) || [];
+    const scheduleTag = sheetTags.find((t) => /name="Расписание"/.test(t));
+    const ridMatch = scheduleTag && scheduleTag.match(/r:id="([^"]+)"/);
+    const rid = ridMatch && ridMatch[1];
+    const relsXml = zip['xl/_rels/workbook.xml.rels'] ? fflate.strFromU8(zip['xl/_rels/workbook.xml.rels']) : '';
+    const relTags = relsXml.match(/<Relationship\b[^>]*\/>/g) || [];
+    const relTag = rid && relTags.find((t) => t.includes(`Id="${rid}"`));
+    const targetMatch = relTag && relTag.match(/Target="worksheets\/([^"]+)"/);
+    const sheetFile = targetMatch && `xl/worksheets/${targetMatch[1]}`;
+    if (sheetFile && zip[sheetFile]) {
+      // Строим диапазоны ТОЛЬКО по реальным строкам матчей — между ними могут
+      // быть строки-разделители дня, объединённые (merge) на всю ширину листа;
+      // если включить их в sqref, Excel сочтёт файл повреждённым (валидация
+      // ссылалась бы на не-якорную ячейку объединённого диапазона).
+      const rowRanges = [];
+      let segStart = scheduleDataRows[0], segEnd = scheduleDataRows[0];
+      for (let i = 1; i < scheduleDataRows.length; i++) {
+        const row = scheduleDataRows[i];
+        if (row === segEnd + 1) { segEnd = row; }
+        else { rowRanges.push([segStart, segEnd]); segStart = row; segEnd = row; }
       }
+      rowRanges.push([segStart, segEnd]);
+      const sqref = scheduleRefereeCols
+        .flatMap((c) => rowRanges.map(([a, b]) => (a === b ? `${c}${a}` : `${c}${a}:${c}${b}`)))
+        .join(' ');
+      const dataValidationsXml = `<dataValidations count="1"><dataValidation type="list" allowBlank="1" showInputMessage="1" showErrorMessage="1" sqref="${sqref}"><formula1>${listFormula}</formula1></dataValidation></dataValidations>`;
+      // Порядок элементов в CT_Worksheet строгий: dataValidations должен идти
+      // РАНЬШЕ hyperlinks/printOptions/pageMargins и РАНЬШЕ ignoredErrors —
+      // xlsx-js-style сам добавляет <ignoredErrors> (числа как текст) перед
+      // </worksheet>, и наивная вставка перед pageMargins/</worksheet> может
+      // оказаться ПОСЛЕ ignoredErrors, что и ломает файл.
+      const sheetXml = fflate.strFromU8(zip[sheetFile]);
+      let patchedSheetXml;
+      if (/<ignoredErrors\b/.test(sheetXml)) {
+        patchedSheetXml = sheetXml.replace(/<ignoredErrors\b/, `${dataValidationsXml}<ignoredErrors`);
+      } else if (/<pageMargins\b/.test(sheetXml)) {
+        patchedSheetXml = sheetXml.replace(/<pageMargins\b/, `${dataValidationsXml}<pageMargins`);
+      } else {
+        patchedSheetXml = sheetXml.replace('</worksheet>', `${dataValidationsXml}</worksheet>`);
+      }
+      zip[sheetFile] = fflate.strToU8(patchedSheetXml);
     }
   }
 
