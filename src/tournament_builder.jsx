@@ -707,9 +707,16 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
 
       setCell(ws, `B${r}`, { v: m.id, s: rowStyle });
       setCell(ws, `C${r}`, { v: m.roundName, s: rowStyle });
-      // Формулы победитель/проигравший
-      const winF = `IF(AND(${COL(C.g1)}${r}<>"",${COL(C.g2)}${r}<>""),IF(${COL(C.g1)}${r}>${COL(C.g2)}${r},${COL(C.t1)}${r},IF(${COL(C.g2)}${r}>${COL(C.g1)}${r},${COL(C.t2)}${r},"=")),"")`;
-      const loseF = `IF(AND(${COL(C.g1)}${r}<>"",${COL(C.g2)}${r}<>""),IF(${COL(C.g1)}${r}>${COL(C.g2)}${r},${COL(C.t2)}${r},IF(${COL(C.g2)}${r}>${COL(C.g1)}${r},${COL(C.t1)}${r},"")),"")`;
+      // Формулы победитель/проигравший. BYE проверяем ПЕРЕД сравнением счёта: если
+      // соперник — пропуск, реальная команда проходит всегда, независимо от того,
+      // вписан ли (ошибочно) счёт в эту строку — иначе шальной счёт в BYE-ячейке
+      // объявляет победителем сам "BYE" и тащит его дальше по сетке до финала.
+      const t1Addr = `${COL(C.t1)}${r}`, t2Addr = `${COL(C.t2)}${r}`;
+      const g1Addr = `${COL(C.g1)}${r}`, g2Addr = `${COL(C.g2)}${r}`;
+      const scoreWinF = `IF(AND(${g1Addr}<>"",${g2Addr}<>""),IF(${g1Addr}>${g2Addr},${t1Addr},IF(${g2Addr}>${g1Addr},${t2Addr},"=")),"")`;
+      const scoreLoseF = `IF(AND(${g1Addr}<>"",${g2Addr}<>""),IF(${g1Addr}>${g2Addr},${t2Addr},IF(${g2Addr}>${g1Addr},${t1Addr},"")),"")`;
+      const winF = `IF(${t1Addr}="BYE",${t2Addr},IF(${t2Addr}="BYE",${t1Addr},${scoreWinF}))`;
+      const loseF = `IF(${t1Addr}="BYE",${t1Addr},IF(${t2Addr}="BYE",${t2Addr},${scoreLoseF}))`;
       setCell(ws, `${COL(C.win)}${r}`, { f: winF, s: { ...rowStyle, font: { ...(rowStyle.font || {}), bold: true } } });
       setCell(ws, `${COL(C.lose)}${r}`, { f: loseF, s: { ...rowStyle, font: { ...(rowStyle.font || {}), italic: true } } });
       setCell(ws, `${COL(C.sep)}${r}`, { v: ':', s: rowStyle });
