@@ -2566,7 +2566,7 @@ function QRCode({ text, size = 128 }) {
       setSvg(qr.createSvgTag(cellSize, 2));
     } catch (e) { console.error('QR error', e); }
   }, [text, size]);
-  return <div className="inline-block" style={{ width: size, height: size }} dangerouslySetInnerHTML={{ __html: svg }} />;
+  return <div className="flex items-center justify-center" style={{ width: size, height: size }} dangerouslySetInnerHTML={{ __html: svg }} />;
 }
 
 // ============ МОДАЛКА С QR-КОДОМ СУДЬИ ============
