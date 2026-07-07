@@ -2466,37 +2466,37 @@ function PlayoffBracketBlock({ title, poMatches, allMatches, scores, teamColors,
     const sched = matchScheduleMap && matchScheduleMap[m.id];
     const matchLabel = m.roundName + (m.isBronze ? ' (бронза)' : '');
     return (
-      <div className="w-56 sm:w-64 bg-white border border-black/10 shadow-sm flex-shrink-0">
-        <div className="flex items-center justify-between gap-1 px-2 py-1 bg-[#f5f2ec] border-b border-black/10">
-          <div className="text-[9px] font-bold text-neutral-500 uppercase tracking-wider truncate">
+      <div className="w-40 sm:w-44 bg-white border border-black/10 shadow-sm flex-shrink-0">
+        <div className="flex items-center justify-between gap-1 px-1.5 py-0.5 bg-[#f5f2ec] border-b border-black/10">
+          <div className="text-[8px] font-bold text-neutral-500 uppercase tracking-wider truncate">
             {sched ? `📍 ${sched.field} · ${sched.startTime}` : `${m.roundName}${m.isBronze ? ' 🥉' : m.roundName === 'Финал' ? ' 🏆' : ''}`}
           </div>
-          <div className="flex items-center gap-1.5 flex-shrink-0">
+          <div className="flex items-center gap-1 flex-shrink-0">
             <button onClick={() => setProtocolModal({ matchId: m.id, matchLabel, t1Label: t1, t2Label: t2, sid1, sid2 })}
-              className="text-neutral-400 hover:text-[#e30613] text-xs leading-none" title="Печатный протокол">🖨</button>
+              className="text-neutral-400 hover:text-[#e30613] text-[10px] leading-none" title="Печатный протокол">🖨</button>
             <button onClick={() => setQrModal({ matchId: m.id, matchLabel })}
-              className="text-neutral-400 hover:text-[#e30613] text-xs leading-none" title="QR для судьи">▦</button>
+              className="text-neutral-400 hover:text-[#e30613] text-[10px] leading-none" title="QR для судьи">▦</button>
           </div>
         </div>
         <button onClick={() => setScoreModal({ matchId: m.id, sid1: sd1, sid2: sd2, t1Label: t1, t2Label: t2, matchLabel })}
           className="w-full text-left hover:bg-[#f5f2ec] transition">
-          <div className={`flex items-center justify-between gap-2 px-2 py-1.5 border-b border-black/5 ${played && sc.a > sc.b ? 'font-black text-[#0c0c0c]' : played && sc.a < sc.b ? 'text-neutral-500' : ''}`}>
-            <span className="flex items-center gap-1.5 min-w-0 truncate text-sm">
-              {sd1 && teamColors[sd1] && <span className="inline-block w-1 h-3.5 flex-shrink-0" style={{ background: teamColors[sd1] }} />}
+          <div className={`flex items-center justify-between gap-1.5 px-1.5 py-1 border-b border-black/5 ${played && sc.a > sc.b ? 'font-black text-[#0c0c0c]' : played && sc.a < sc.b ? 'text-neutral-500' : ''}`}>
+            <span className="flex items-center gap-1 min-w-0 truncate text-xs">
+              {sd1 && teamColors[sd1] && <span className="inline-block w-1 h-3 flex-shrink-0" style={{ background: teamColors[sd1] }} />}
               <span className="truncate">{t1}</span>
             </span>
-            <span className="text-sm font-black tabular-nums flex-shrink-0">{played ? sc.a : '–'}</span>
+            <span className="text-xs font-black tabular-nums flex-shrink-0">{played ? sc.a : '–'}</span>
           </div>
-          <div className={`flex items-center justify-between gap-2 px-2 py-1.5 ${played && sc.b > sc.a ? 'font-black text-[#0c0c0c]' : played && sc.b < sc.a ? 'text-neutral-500' : ''}`}>
-            <span className="flex items-center gap-1.5 min-w-0 truncate text-sm">
-              {sd2 && teamColors[sd2] && <span className="inline-block w-1 h-3.5 flex-shrink-0" style={{ background: teamColors[sd2] }} />}
+          <div className={`flex items-center justify-between gap-1.5 px-1.5 py-1 ${played && sc.b > sc.a ? 'font-black text-[#0c0c0c]' : played && sc.b < sc.a ? 'text-neutral-500' : ''}`}>
+            <span className="flex items-center gap-1 min-w-0 truncate text-xs">
+              {sd2 && teamColors[sd2] && <span className="inline-block w-1 h-3 flex-shrink-0" style={{ background: teamColors[sd2] }} />}
               <span className="truncate">{t2}</span>
             </span>
-            <span className="text-sm font-black tabular-nums flex-shrink-0">{played ? sc.b : '–'}</span>
+            <span className="text-xs font-black tabular-nums flex-shrink-0">{played ? sc.b : '–'}</span>
           </div>
         </button>
         {refereeLabel(m.id) && (
-          <div className="text-[9px] text-neutral-400 px-2 py-1 border-t border-black/5 truncate">👤 {refereeLabel(m.id)}</div>
+          <div className="text-[8px] text-neutral-400 px-1.5 py-0.5 border-t border-black/5 truncate">👤 {refereeLabel(m.id)}</div>
         )}
       </div>
     );
@@ -2512,11 +2512,11 @@ function PlayoffBracketBlock({ title, poMatches, allMatches, scores, teamColors,
     const [aId, bId] = feeders;
     return (
       <div className="flex items-stretch">
-        <div className="flex flex-col justify-around gap-6">
+        <div className="flex flex-col justify-around gap-3">
           <BracketNode m={byId[aId]} />
           <BracketNode m={byId[bId]} />
         </div>
-        <div className="w-5 sm:w-7 relative flex-shrink-0">
+        <div className="w-4 sm:w-5 relative flex-shrink-0">
           <div className="absolute left-0 right-1/2 top-1/4 bottom-1/4 border-t-2 border-b-2 border-r-2 border-neutral-300 rounded-r-md" />
           <div className="absolute left-1/2 right-0 top-1/2 border-t-2 border-neutral-300" />
         </div>
