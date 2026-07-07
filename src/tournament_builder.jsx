@@ -2588,19 +2588,30 @@ function PlayoffBracketBlock({ title, poMatches, allMatches, scores, teamColors,
     );
   };
 
+  // Разные "корни" (напр. Финал и Бронза, или "5-6"/"7-8") могут ссылаться на
+  // ОДНИ И ТЕ ЖЕ более ранние матчи (Бронза — на тех же полуфиналистов, что и
+  // Финал, только проигравших). Без отметки "уже нарисовано" такой общий
+  // предок отрисовывался бы под каждым корнем заново — сетка дублировалась
+  // бы целиком. claimed — общий на все корни вкладки набор уже отрисованных id.
+  const claimed = new Set();
+
   // Рекурсивный узел: если у матча есть "фидеры" (winFrom/loseFrom) из ТОЙ ЖЕ
-  // вкладки — рисуем их слева и соединяем скобкой; иначе матч — лист сетки
-  // (первый раунд или ссылка на матч из другой вкладки).
-  const BracketNode = ({ m }) => {
+  // вкладки и они ещё не отрисованы под другим корнем — рисуем их слева и
+  // соединяем скобкой; иначе матч — лист сетки (первый раунд, ссылка на матч
+  // из другой вкладки, или предок, уже показанный под другим корнем).
+  // Обычная функция (не JSX-компонент) — чтобы claimed.add() гарантированно
+  // отмечал узел ДО того, как соседний корень решит, рисовать ли его снова.
+  const renderBracketNode = (m) => {
+    claimed.add(m.id);
     const feeders = m.winFrom || m.loseFrom;
-    const within = feeders && feeders.every((id) => byId[id] && groupKeyOf(byId[id]) === groupKeyOf(m));
-    if (!feeders || !within) return <MatchBox m={m} />;
+    const within = feeders && feeders.every((id) => byId[id] && groupKeyOf(byId[id]) === groupKeyOf(m) && !claimed.has(id));
+    if (!feeders || !within) return <MatchBox key={m.id} m={m} />;
     const [aId, bId] = feeders;
     return (
-      <div className="flex items-stretch">
+      <div key={m.id} className="flex items-stretch">
         <div className="flex flex-col justify-around gap-3">
-          <BracketNode m={byId[aId]} />
-          <BracketNode m={byId[bId]} />
+          {renderBracketNode(byId[aId])}
+          {renderBracketNode(byId[bId])}
         </div>
         <div className="w-4 sm:w-5 relative flex-shrink-0">
           <div className="absolute left-0 right-1/2 top-1/4 bottom-1/4 border-t-2 border-b-2 border-r-2 border-neutral-300 rounded-r-md" />
@@ -2638,7 +2649,7 @@ function PlayoffBracketBlock({ title, poMatches, allMatches, scores, teamColors,
       )}
       <div className="p-4 sm:p-6 overflow-x-auto">
         <div className="flex flex-col gap-8 w-max">
-          {roots.map((m) => <BracketNode key={m.id} m={m} />)}
+          {roots.map((m) => renderBracketNode(m))}
         </div>
       </div>
     </div>
