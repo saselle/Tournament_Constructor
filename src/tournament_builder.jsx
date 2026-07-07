@@ -693,138 +693,224 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
     XLSX.utils.book_append_sheet(wb, ws, 'Шахматки');
   }
 
-  // ===== ЛИСТ: Плей-офф =====
-  const poWinRef = {}; // matchId -> "Плей-офф!$I$N"
+  // ===== ЛИСТ: Плей-офф (визуальная сетка — раунды колонками, как в вебе) =====
+  const poWinRef = {}; // matchId -> ссылка на служебную ячейку с формулой победителя
   const poLoseRef = {};
-  const poT1Ref = {}; // matchId -> "Плей-офф!$D$N"
+  const poT1Ref = {}; // matchId -> ссылка на видимую ячейку с именем команды 1 в сетке
   const poT2Ref = {};
   if (system !== 'group') {
     const poMatches = matches.filter((m) => m.phase === 'playoff');
-    const ws = {};
-    let R = 1;
-    setCell(ws, `A${R}`, { v: 'СЕТКА ПЛЕЙ-ОФФ', s: STYLES.pageTitle });
-    R++;
-    setCell(ws, `A${R}`, { v: 'Вписывайте голы (только в жёлтые ячейки). Победитель проходит в следующий раунд автоматически. Проигравшие полуфиналов попадают в матч за бронзу.', s: STYLES.instruction });
-    R += 2;
-    // Шапка
-    const C = { id: 2, rnd: 3, t1: 4, g1: 5, sep: 6, g2: 7, t2: 8, win: 9, lose: 10, field: 11, time: 12 };
-    const TOTAL_C = 12;
-    const writeHeader = (row) => {
-      setCell(ws, `B${row}`, { v: '№', s: STYLES.tableHeader });
-      setCell(ws, `C${row}`, { v: 'Раунд', s: STYLES.tableHeader });
-      setCell(ws, `D${row}`, { v: 'Команда 1', s: STYLES.tableHeader });
-      setCell(ws, `E${row}`, { v: 'Г1', s: STYLES.tableHeader });
-      setCell(ws, `F${row}`, { v: '', s: STYLES.tableHeader });
-      setCell(ws, `G${row}`, { v: 'Г2', s: STYLES.tableHeader });
-      setCell(ws, `H${row}`, { v: 'Команда 2', s: STYLES.tableHeader });
-      setCell(ws, `I${row}`, { v: 'Победитель', s: STYLES.tableHeader });
-      setCell(ws, `J${row}`, { v: 'Проигравший', s: STYLES.tableHeader });
-      setCell(ws, `K${row}`, { v: 'Поле', s: STYLES.tableHeader });
-      setCell(ws, `L${row}`, { v: 'Время', s: STYLES.tableHeader });
-    };
-    writeHeader(R);
-    const groupMerges = [];
-    R++;
-    // Распределение матчей по строкам: перед каждой сменой группы (основная сетка /
-    // распределение мест 5-8, 3-4 и т.п.) вставляем строку-разделитель с названием —
-    // матчи уже идут в файле подряд по группам, поэтому достаточно отслеживать смену.
-    const rowOf = {};
-    let prevGroupKey = undefined;
-    let cursor = R;
+    const byIdPo = {};
+    poMatches.forEach((m) => { byIdPo[m.id] = m; });
+    const groupKeyOf = (m) => m.placementGroup || '__main__';
+    const groupOrder = [];
+    const groupsMap = new Map();
     poMatches.forEach((m) => {
-      const groupKey = m.placementGroup || '__main__';
-      if (groupKey !== prevGroupKey) {
-        setCell(ws, `A${cursor}`, { v: m.placementGroupLabel || 'ОСНОВНАЯ СЕТКА', s: STYLES.groupHeader });
-        for (let c = 1; c < TOTAL_C; c++) setCell(ws, `${COL(c + 1)}${cursor}`, { v: '', s: STYLES.groupHeader });
-        groupMerges.push({ s: { r: cursor - 1, c: 0 }, e: { r: cursor - 1, c: TOTAL_C - 1 } });
-        cursor++;
-        prevGroupKey = groupKey;
-      }
-      rowOf[m.id] = cursor;
-      cursor++;
+      const k = groupKeyOf(m);
+      if (!groupsMap.has(k)) { groupsMap.set(k, { label: m.placementGroupLabel || 'ОСНОВНАЯ СЕТКА', matches: [] }); groupOrder.push(k); }
+      groupsMap.get(k).matches.push(m);
     });
-    const lastRow = cursor - 1;
+    groupOrder.sort((a, b) => (a === '__main__' ? -1 : b === '__main__' ? 1 : 0));
 
-    poMatches.forEach((m) => {
-      const r = rowOf[m.id];
-      // Выбираем стиль строки в зависимости от раунда
-      let rowStyle = STYLES.cell;
-      if (m.isBronze) rowStyle = STYLES.roundBronze;
-      else if (m.roundName === 'Финал') rowStyle = STYLES.roundFinal;
-      else if (m.roundName === '1/2') rowStyle = STYLES.roundSemi;
+    const ws = {};
+    setCell(ws, 'A1', { v: 'СЕТКА ПЛЕЙ-ОФФ', s: STYLES.pageTitle });
+    setCell(ws, 'A2', { v: 'Вписывайте голы в жёлтые ячейки — победитель и следующий раунд считаются сами, команды продвигаются по сетке автоматически.', s: STYLES.instruction });
 
-      setCell(ws, `B${r}`, { v: m.id, s: rowStyle });
-      setCell(ws, `C${r}`, { v: m.roundName, s: rowStyle });
-      const sched = matchScheduleIndex[m.id];
-      setCell(ws, `${COL(C.field)}${r}`, { v: sched ? sched.field : '', s: rowStyle });
-      setCell(ws, `${COL(C.time)}${r}`, { v: sched ? sched.time : '', s: { ...rowStyle, font: { ...(rowStyle.font || {}), }, alignment: { horizontal: 'center', vertical: 'center' } } });
-      // Формулы победитель/проигравший. BYE проверяем ПЕРЕД сравнением счёта: если
-      // соперник — пропуск, реальная команда проходит всегда, независимо от того,
-      // вписан ли (ошибочно) счёт в эту строку — иначе шальной счёт в BYE-ячейке
-      // объявляет победителем сам "BYE" и тащит его дальше по сетке до финала.
-      const t1Addr = `${COL(C.t1)}${r}`, t2Addr = `${COL(C.t2)}${r}`;
-      const g1Addr = `${COL(C.g1)}${r}`, g2Addr = `${COL(C.g2)}${r}`;
-      const scoreWinF = `IF(AND(${g1Addr}<>"",${g2Addr}<>""),IF(${g1Addr}>${g2Addr},${t1Addr},IF(${g2Addr}>${g1Addr},${t2Addr},"=")),"")`;
-      const scoreLoseF = `IF(AND(${g1Addr}<>"",${g2Addr}<>""),IF(${g1Addr}>${g2Addr},${t2Addr},IF(${g2Addr}>${g1Addr},${t1Addr},"")),"")`;
-      const winF = `IF(${t1Addr}="BYE",${t2Addr},IF(${t2Addr}="BYE",${t1Addr},${scoreWinF}))`;
-      const loseF = `IF(${t1Addr}="BYE",${t1Addr},IF(${t2Addr}="BYE",${t2Addr},${scoreLoseF}))`;
-      setCell(ws, `${COL(C.win)}${r}`, { f: winF, s: { ...rowStyle, font: { ...(rowStyle.font || {}), bold: true } } });
-      setCell(ws, `${COL(C.lose)}${r}`, { f: loseF, s: { ...rowStyle, font: { ...(rowStyle.font || {}), italic: true } } });
-      setCell(ws, `${COL(C.sep)}${r}`, { v: ':', s: rowStyle });
-      setCell(ws, `${COL(C.g1)}${r}`, { v: '', t: 's', s: STYLES.cellInput });
-      setCell(ws, `${COL(C.g2)}${r}`, { v: '', t: 's', s: STYLES.cellInput });
-      poWinRef[m.id] = `'Плей-офф'!$${COL(C.win)}$${r}`;
-      poLoseRef[m.id] = `'Плей-офф'!$${COL(C.lose)}$${r}`;
-      poT1Ref[m.id] = `'Плей-офф'!$${COL(C.t1)}$${r}`;
-      poT2Ref[m.id] = `'Плей-офф'!$${COL(C.t2)}$${r}`;
+    // Раунды идут колонками: у каждого матча 2 колонки (команда+счёт), между
+    // раундами — 2 узкие «коннекторные» колонки, в одной из них рисуется
+    // скобка (граница ячейки), соединяющая пару фидер-матчей со следующим
+    // раундом — так же, как в вебе. Формулы победителя/проигравшего вынесены
+    // в служебные колонки WIN_COL/LOSE_COL (далеко справа, вне видимой сетки),
+    // а в самой сетке видно только реальное имя команды.
+    const MATCH_W = 2, CONN_W = 2, MATCH_H = 3, LEAF_GAP = MATCH_H + 1;
+    const WIN_COL = 40, LOSE_COL = 41;
 
-      // Команды
-      const fillTeam = (col) => {
-        const addr = `${COL(col)}${r}`;
-        if (m.winFrom) {
-          const sid = col === C.t1 ? m.winFrom[0] : m.winFrom[1];
-          setCell(ws, addr, { f: poWinRef[sid], s: rowStyle });
-        } else if (m.loseFrom) {
-          const sid = col === C.t1 ? m.loseFrom[0] : m.loseFrom[1];
-          setCell(ws, addr, { f: poLoseRef[sid], s: rowStyle });
-        } else if (m.seedA !== undefined) {
-          const sd = col === C.t1 ? m.seedA : m.seedB;
-          if (sd > m.playoffTeams) {
-            setCell(ws, addr, { v: 'BYE', s: { ...rowStyle, font: { ...(rowStyle.font || {}), italic: true, color: { rgb: '94A3B8' } } } });
-          } else if (m.bracket === 'gold' || m.bracket === 'silver') {
-            // Золото/серебро: сид N — это группа N, место фиксировано (1-е для золота, 2-е для серебра)
-            const placeIdx = m.bracket === 'gold' ? 1 : 2;
-            const grIdx = sd;
-            const key = `G${grIdx}:${placeIdx}`;
-            const placeOrd = placeIdx === 1 ? '1-е' : '2-е';
-            const fall = `${placeOrd} место Гр.${grIdx}`;
-            setCell(ws, addr, placeFormula[key]
-              ? { f: `IFERROR(${placeFormula[key]},"${fall}")`, s: rowStyle }
-              : { v: fall, s: rowStyle });
-          } else if (isMixedAdvance) {
-            const ng = numGroups;
-            const placeIdx = Math.ceil(sd / ng);
-            const grIdx = ((sd - 1) % ng) + 1;
-            const key = `G${grIdx}:${placeIdx}`;
-            const placeOrd = ['', '1-е', '2-е', '3-е', '4-е', '5-е', '6-е', '7-е', '8-е'][placeIdx] || `${placeIdx}-е`;
-            const fall = `${placeOrd} место Гр.${grIdx}`;
-            setCell(ws, addr, placeFormula[key]
-              ? { f: `IFERROR(${placeFormula[key]},"${fall}")`, s: rowStyle }
-              : { v: fall, s: rowStyle });
-          } else {
-            // playoff: ссылка на лист Команды
-            setCell(ws, addr, { f: teamNameRef[sd], s: rowStyle });
+    let curRow = 4;
+    let maxTeamColEnd = 1;
+    const groupDividerRows = [];
+
+    groupOrder.forEach((gKey) => {
+      const group = groupsMap.get(gKey);
+      const groupMatches = group.matches;
+      const inGroup = (id) => byIdPo[id] && groupKeyOf(byIdPo[id]) === gKey;
+
+      // Глубина матча в сетке (= номер колонки-раунда) — считаем рекурсивно по
+      // фидерам внутри той же группы, а не по m.round: у вложенных под-сеток
+      // распределения мест (5-8, 3-4…) нумерация раундов начинается заново на
+      // каждом уровне рекурсии buildPlacementBracket и не годится для колонок.
+      const depthCache = {};
+      const depthOf = (m) => {
+        if (depthCache[m.id] != null) return depthCache[m.id];
+        const feeders = m.winFrom || m.loseFrom;
+        const within = feeders && feeders.every(inGroup);
+        const d = (!feeders || !within) ? 0 : 1 + Math.max(depthOf(byIdPo[feeders[0]]), depthOf(byIdPo[feeders[1]]));
+        depthCache[m.id] = d;
+        return d;
+      };
+      groupMatches.forEach(depthOf);
+
+      const dividerRow = curRow;
+      curRow += 2;
+
+      // Раскладка по строкам: у листьев (первый раунд группы) строки идут
+      // подряд с шагом LEAF_GAP; у остальных матчей — по центру между двумя
+      // фидерами (та же логика, что и в CSS-сетке в вебе: justify-around).
+      let nextLeafTop = curRow;
+      const topCache = {};
+      const layout = (m) => {
+        if (topCache[m.id] != null) return topCache[m.id];
+        const feeders = m.winFrom || m.loseFrom;
+        const within = feeders && feeders.every(inGroup);
+        let top;
+        if (!feeders || !within) {
+          top = nextLeafTop;
+          nextLeafTop += LEAF_GAP;
+        } else {
+          const ca = layout(byIdPo[feeders[0]]) + 1.5;
+          const cb = layout(byIdPo[feeders[1]]) + 1.5;
+          top = Math.round((ca + cb) / 2 - 1.5);
+        }
+        topCache[m.id] = top;
+        return top;
+      };
+      const referenced = new Set();
+      groupMatches.forEach((m) => { const f = m.winFrom || m.loseFrom; if (f) f.forEach((id) => { if (inGroup(id)) referenced.add(id); }); });
+      const roots = groupMatches.filter((m) => !referenced.has(m.id));
+      roots.forEach(layout);
+      groupMatches.forEach((m) => { if (topCache[m.id] == null) layout(m); });
+
+      // Разные финалы распределения мест (напр. "5-6" и "7-8") могут делить одну
+      // и ту же пару фидеров (одни и те же матчи первого раунда группы — только
+      // победители идут в один финал, а проигравшие в другой) и получить
+      // одинаковую расчётную позицию. Занятые (глубина, строка) не переиспользуем —
+      // при коллизии сдвигаем вниз на шаг листа.
+      const usedSlots = new Set();
+      let maxRowUsedInGroup = nextLeafTop - 1;
+
+      groupMatches.forEach((m) => {
+        const depth = depthOf(m);
+        let top = topCache[m.id];
+        let slotKey = `${depth}:${top}`;
+        while (usedSlots.has(slotKey)) { top += LEAF_GAP; slotKey = `${depth}:${top}`; }
+        usedSlots.add(slotKey);
+        topCache[m.id] = top;
+        maxRowUsedInGroup = Math.max(maxRowUsedInGroup, top + MATCH_H - 1);
+        const teamCol = 2 + depth * (MATCH_W + CONN_W);
+        const scoreCol = teamCol + 1;
+        const headerRow = top, t1Row = top + 1, t2Row = top + 2;
+
+        let rowStyle = STYLES.cell;
+        if (m.isBronze) rowStyle = STYLES.roundBronze;
+        else if (m.roundName === 'Финал') rowStyle = STYLES.roundFinal;
+        else if (m.roundName === '1/2') rowStyle = STYLES.roundSemi;
+
+        const sched = matchScheduleIndex[m.id];
+        const headerText = sched ? `📍 ${sched.field} · ${sched.time}` : (m.roundName + (m.isBronze ? ' (бронза)' : ''));
+        const headerStyle = { alignment: { horizontal: 'left', vertical: 'center' }, font: { sz: 9, bold: true, color: { rgb: '565656' } }, fill: { fgColor: { rgb: 'F5F2EC' } }, border: BD('D6D3D1') };
+        setCell(ws, `${COL(teamCol)}${headerRow}`, { v: headerText, s: headerStyle });
+        setCell(ws, `${COL(scoreCol)}${headerRow}`, { v: '', s: headerStyle });
+
+        const t1Addr = `${COL(teamCol)}${t1Row}`, t2Addr = `${COL(teamCol)}${t2Row}`;
+        const g1Addr = `${COL(scoreCol)}${t1Row}`, g2Addr = `${COL(scoreCol)}${t2Row}`;
+        setCell(ws, g1Addr, { v: '', t: 's', s: STYLES.cellInput });
+        setCell(ws, g2Addr, { v: '', t: 's', s: STYLES.cellInput });
+
+        // Формулы победитель/проигравший (в служебных колонках). BYE проверяем
+        // ПЕРЕД сравнением счёта — иначе шальной счёт в BYE-ячейке объявляет
+        // победителем сам "BYE" и тащит его дальше по сетке до финала.
+        const scoreWinF = `IF(AND(${g1Addr}<>"",${g2Addr}<>""),IF(${g1Addr}>${g2Addr},${t1Addr},IF(${g2Addr}>${g1Addr},${t2Addr},"=")),"")`;
+        const scoreLoseF = `IF(AND(${g1Addr}<>"",${g2Addr}<>""),IF(${g1Addr}>${g2Addr},${t2Addr},IF(${g2Addr}>${g1Addr},${t1Addr},"")),"")`;
+        const winF = `IF(${t1Addr}="BYE",${t2Addr},IF(${t2Addr}="BYE",${t1Addr},${scoreWinF}))`;
+        const loseF = `IF(${t1Addr}="BYE",${t1Addr},IF(${t2Addr}="BYE",${t2Addr},${scoreLoseF}))`;
+        setCell(ws, `${COL(WIN_COL)}${t1Row}`, { f: winF });
+        setCell(ws, `${COL(LOSE_COL)}${t1Row}`, { f: loseF });
+        poWinRef[m.id] = `'Плей-офф'!$${COL(WIN_COL)}$${t1Row}`;
+        poLoseRef[m.id] = `'Плей-офф'!$${COL(LOSE_COL)}$${t1Row}`;
+        poT1Ref[m.id] = `'Плей-офф'!$${COL(teamCol)}$${t1Row}`;
+        poT2Ref[m.id] = `'Плей-офф'!$${COL(teamCol)}$${t2Row}`;
+
+        // Команды
+        const fillTeam = (addr, isFirst) => {
+          if (m.winFrom) {
+            const sid = isFirst ? m.winFrom[0] : m.winFrom[1];
+            setCell(ws, addr, { f: poWinRef[sid], s: rowStyle });
+          } else if (m.loseFrom) {
+            const sid = isFirst ? m.loseFrom[0] : m.loseFrom[1];
+            setCell(ws, addr, { f: poLoseRef[sid], s: rowStyle });
+          } else if (m.seedA !== undefined) {
+            const sd = isFirst ? m.seedA : m.seedB;
+            if (sd > m.playoffTeams) {
+              setCell(ws, addr, { v: 'BYE', s: { ...rowStyle, font: { ...(rowStyle.font || {}), italic: true, color: { rgb: '94A3B8' } } } });
+            } else if (m.bracket === 'gold' || m.bracket === 'silver') {
+              // Золото/серебро: сид N — это группа N, место фиксировано (1-е для золота, 2-е для серебра)
+              const placeIdx = m.bracket === 'gold' ? 1 : 2;
+              const grIdx = sd;
+              const key = `G${grIdx}:${placeIdx}`;
+              const placeOrd = placeIdx === 1 ? '1-е' : '2-е';
+              const fall = `${placeOrd} место Гр.${grIdx}`;
+              setCell(ws, addr, placeFormula[key]
+                ? { f: `IFERROR(${placeFormula[key]},"${fall}")`, s: rowStyle }
+                : { v: fall, s: rowStyle });
+            } else if (isMixedAdvance) {
+              const ng = numGroups;
+              const placeIdx = Math.ceil(sd / ng);
+              const grIdx = ((sd - 1) % ng) + 1;
+              const key = `G${grIdx}:${placeIdx}`;
+              const placeOrd = ['', '1-е', '2-е', '3-е', '4-е', '5-е', '6-е', '7-е', '8-е'][placeIdx] || `${placeIdx}-е`;
+              const fall = `${placeOrd} место Гр.${grIdx}`;
+              setCell(ws, addr, placeFormula[key]
+                ? { f: `IFERROR(${placeFormula[key]},"${fall}")`, s: rowStyle }
+                : { v: fall, s: rowStyle });
+            } else {
+              // playoff: ссылка на лист Команды
+              setCell(ws, addr, { f: teamNameRef[sd], s: rowStyle });
+            }
+          }
+        };
+        fillTeam(t1Addr, true);
+        fillTeam(t2Addr, false);
+
+        // Скобка-коннектор к предыдущему раунду: вертикальная линия (правая
+        // граница ячейки) от строки одного фидера до строки другого, вплотную
+        // к колонке этого матча — так же соединяются пары в вебе.
+        const feeders = m.winFrom || m.loseFrom;
+        const within = feeders && feeders.every(inGroup);
+        if (feeders && within) {
+          const rowA = topCache[feeders[0]] + 1, rowB = topCache[feeders[1]] + 1;
+          const connCol = teamCol - 1;
+          const lo = Math.min(rowA, rowB), hi = Math.max(rowA, rowB);
+          for (let rr = lo; rr <= hi; rr++) {
+            setCell(ws, `${COL(connCol)}${rr}`, { v: '', s: { border: { right: { style: 'medium', color: { rgb: 'D6D3D1' } } } } });
           }
         }
-      };
-      fillTeam(C.t1);
-      fillTeam(C.t2);
+
+        maxTeamColEnd = Math.max(maxTeamColEnd, scoreCol);
+      });
+
+      groupDividerRows.push(dividerRow);
+      curRow = maxRowUsedInGroup + 3;
     });
-    ws['!ref'] = `A1:${COL(TOTAL_C)}${lastRow}`;
-    ws['!cols'] = [{ wch: 3 }, { wch: 5 }, { wch: 9 }, { wch: 24 }, { wch: 5 }, { wch: 3 }, { wch: 5 }, { wch: 24 }, { wch: 24 }, { wch: 24 }, { wch: 12 }, { wch: 13 }];
+
+    // Разделители групп растягиваем на всю итоговую ширину сетки — она известна
+    // только после того, как все группы (основная сетка + распределения мест) улеглись.
+    const groupMerges = groupDividerRows.map((row, i) => {
+      const gKey = groupOrder[i];
+      setCell(ws, `A${row}`, { v: groupsMap.get(gKey).label, s: STYLES.groupHeader });
+      for (let c = 1; c < maxTeamColEnd; c++) setCell(ws, `${COL(c + 1)}${row}`, { v: '', s: STYLES.groupHeader });
+      return { s: { r: row - 1, c: 0 }, e: { r: row - 1, c: maxTeamColEnd - 1 } };
+    });
+
+    const lastRow = curRow - 2;
+    ws['!ref'] = `A1:${COL(Math.max(maxTeamColEnd, LOSE_COL))}${lastRow}`;
+    const cols = [{ wch: 3 }];
+    for (let ci = 2; ci <= maxTeamColEnd; ci++) {
+      const off = (ci - 2) % (MATCH_W + CONN_W);
+      cols.push(off === 0 ? { wch: 22 } : off === 1 ? { wch: 6 } : { wch: 3 });
+    }
+    ws['!cols'] = cols;
     ws['!merges'] = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: TOTAL_C - 1 } },
-      { s: { r: 1, c: 0 }, e: { r: 1, c: TOTAL_C - 1 } },
+      { s: { r: 0, c: 0 }, e: { r: 0, c: maxTeamColEnd - 1 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: maxTeamColEnd - 1 } },
       ...groupMerges,
     ];
     XLSX.utils.book_append_sheet(wb, ws, 'Плей-офф');
