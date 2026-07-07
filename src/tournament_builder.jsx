@@ -180,13 +180,18 @@ const ROUND_NAMES = ['Финал', '1/2', '1/4', '1/8', '1/16', '1/32', '1/64'];
 // место, которое может занять победитель этой под-сетки (проигравший — rankOffset+1).
 // Рекурсивно продолжает вглубь: полуфинальные лузеры этой же под-сетки определяют
 // следующую пару мест (например, из 5-8 получаем 5-6 и 7-8).
-const buildPlacementBracket = (loserMatchIds, startId, rankOffset, bracket) => {
+const buildPlacementBracket = (loserMatchIds, startId, rankOffset, bracket, groupId, groupLabel) => {
   const matches = [];
   let id = startId;
   const bracketSize = loserMatchIds.length;
   const numRounds = Math.log2(bracketSize);
   const isSingleMatch = numRounds === 1;
   const finalLabel = `За ${rankOffset}-${rankOffset + 1} место`;
+  // Группа для вкладок визуальной сетки (веб + xlsx): у всей рекурсивной под-сетки
+  // (например "5-8 мест", внутри которой отдельные финалы "5-6" и "7-8") — один
+  // общий groupId/groupLabel, заданный самым верхним вызовом.
+  const gId = groupId || `place${rankOffset}`;
+  const gLabel = groupLabel || finalLabel;
 
   const r1Start = id;
   for (let i = 0; i < bracketSize / 2; i++) {
@@ -197,6 +202,7 @@ const buildPlacementBracket = (loserMatchIds, startId, rankOffset, bracket) => {
       loseFrom: [a, b],
       t1: `Проигр.М${a}`, t2: `Проигр.М${b}`,
       label: isSingleMatch ? finalLabel : `${ROUND_NAMES[numRounds - 1] || 'Р1'} (места) м.${i + 1}`,
+      placementGroup: gId, placementGroupLabel: gLabel,
     });
   }
   const roundStarts = [r1Start];
@@ -214,6 +220,7 @@ const buildPlacementBracket = (loserMatchIds, startId, rankOffset, bracket) => {
         winFrom: [prevStart + i * 2, prevStart + i * 2 + 1],
         t1: `Поб.М${prevStart + i * 2}`, t2: `Поб.М${prevStart + i * 2 + 1}`,
         label: isFinal ? rName : `${rName} (места) м.${i + 1}`,
+        placementGroup: gId, placementGroupLabel: gLabel,
       });
     }
     roundStarts.push(rStart); roundCounts.push(cnt);
@@ -226,7 +233,7 @@ const buildPlacementBracket = (loserMatchIds, startId, rankOffset, bracket) => {
     if (cnt2 < 2) continue;
     const ids2 = Array.from({ length: cnt2 }, (_, i) => roundStarts[r - 1] + i);
     const subRankOffset = rankOffset + Math.pow(2, numRounds - r);
-    const sub = buildPlacementBracket(ids2, nextId, subRankOffset, bracket);
+    const sub = buildPlacementBracket(ids2, nextId, subRankOffset, bracket, gId, gLabel);
     matches.push(...sub.matches);
     nextId = sub.nextId;
   }
@@ -293,7 +300,9 @@ const buildBracketMatches = (startId, playoffTeams, opts) => {
         const cnt = roundCounts[r - 1];
         const ids = Array.from({ length: cnt }, (_, i) => roundStarts[r - 1] + i);
         const rankOffset = cnt + 1;
-        const sub = buildPlacementBracket(ids, nextId, rankOffset, bracket);
+        const groupId = `place${rankOffset}`;
+        const groupLabel = cnt <= 2 ? `За ${rankOffset}-${rankOffset + 1} место` : `За ${rankOffset}-${rankOffset + cnt - 1} мест`;
+        const sub = buildPlacementBracket(ids, nextId, rankOffset, bracket, groupId, groupLabel);
         matches.push(...sub.matches);
         nextId = sub.nextId;
       }
@@ -446,6 +455,23 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
   const refereeNamesMap = refereeInfo?.names || {};
   const matchRefereesMap = refereeInfo?.byMatch || {};
   const refereeLabelFor = (matchId) => resolveReferee(matchRefereesMap[matchId], refereeNamesMap);
+  // Поле/время каждого матча по расписанию — для колонок Поле/Время на листе
+  // «Плей-офф» (вместо логотипов, как в вебе — здесь это просто текст).
+  const matchScheduleIndex = {};
+  {
+    const dOffsets0 = structure.dayOffsets || [0];
+    const sInDay0 = structure.slotsInDay || [structure.slotsPerDay];
+    const dInfos0 = structure.dayInfos || [{ startTime: params.startTime }];
+    schedule.forEach((s) => {
+      const pos = slotToDay(s.slotIdx, dOffsets0, sInDay0);
+      const dayStart = timeToMin((dInfos0[pos.day - 1] || dInfos0[0]).startTime);
+      matchScheduleIndex[s.matchId] = {
+        day: pos.day,
+        time: minToTime(dayStart + pos.local * slotDur),
+        field: fieldNames[s.field] || `Поле ${s.field}`,
+      };
+    });
+  }
   const wb = XLSX.utils.book_new();
   const { system, totalTeams, fields, groupSize, advance, startTime, drawOrder } = params;
   const hasGroups = system === 'group' || system === 'mixed' || system === 'mixed-full' || system === 'mixed-goldsilver' || system === 'mixed-goldsilver-full';
@@ -681,21 +707,43 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
     setCell(ws, `A${R}`, { v: 'Вписывайте голы (только в жёлтые ячейки). Победитель проходит в следующий раунд автоматически. Проигравшие полуфиналов попадают в матч за бронзу.', s: STYLES.instruction });
     R += 2;
     // Шапка
-    const C = { id: 2, rnd: 3, t1: 4, g1: 5, sep: 6, g2: 7, t2: 8, win: 9, lose: 10 };
-    const headerRow = R;
-    setCell(ws, `B${headerRow}`, { v: '№', s: STYLES.tableHeader });
-    setCell(ws, `C${headerRow}`, { v: 'Раунд', s: STYLES.tableHeader });
-    setCell(ws, `D${headerRow}`, { v: 'Команда 1', s: STYLES.tableHeader });
-    setCell(ws, `E${headerRow}`, { v: 'Г1', s: STYLES.tableHeader });
-    setCell(ws, `F${headerRow}`, { v: '', s: STYLES.tableHeader });
-    setCell(ws, `G${headerRow}`, { v: 'Г2', s: STYLES.tableHeader });
-    setCell(ws, `H${headerRow}`, { v: 'Команда 2', s: STYLES.tableHeader });
-    setCell(ws, `I${headerRow}`, { v: 'Победитель', s: STYLES.tableHeader });
-    setCell(ws, `J${headerRow}`, { v: 'Проигравший', s: STYLES.tableHeader });
+    const C = { id: 2, rnd: 3, t1: 4, g1: 5, sep: 6, g2: 7, t2: 8, win: 9, lose: 10, field: 11, time: 12 };
+    const TOTAL_C = 12;
+    const writeHeader = (row) => {
+      setCell(ws, `B${row}`, { v: '№', s: STYLES.tableHeader });
+      setCell(ws, `C${row}`, { v: 'Раунд', s: STYLES.tableHeader });
+      setCell(ws, `D${row}`, { v: 'Команда 1', s: STYLES.tableHeader });
+      setCell(ws, `E${row}`, { v: 'Г1', s: STYLES.tableHeader });
+      setCell(ws, `F${row}`, { v: '', s: STYLES.tableHeader });
+      setCell(ws, `G${row}`, { v: 'Г2', s: STYLES.tableHeader });
+      setCell(ws, `H${row}`, { v: 'Команда 2', s: STYLES.tableHeader });
+      setCell(ws, `I${row}`, { v: 'Победитель', s: STYLES.tableHeader });
+      setCell(ws, `J${row}`, { v: 'Проигравший', s: STYLES.tableHeader });
+      setCell(ws, `K${row}`, { v: 'Поле', s: STYLES.tableHeader });
+      setCell(ws, `L${row}`, { v: 'Время', s: STYLES.tableHeader });
+    };
+    writeHeader(R);
+    const groupMerges = [];
     R++;
-    // Распределение матчей по строкам
+    // Распределение матчей по строкам: перед каждой сменой группы (основная сетка /
+    // распределение мест 5-8, 3-4 и т.п.) вставляем строку-разделитель с названием —
+    // матчи уже идут в файле подряд по группам, поэтому достаточно отслеживать смену.
     const rowOf = {};
-    poMatches.forEach((m, i) => { rowOf[m.id] = R + i; });
+    let prevGroupKey = undefined;
+    let cursor = R;
+    poMatches.forEach((m) => {
+      const groupKey = m.placementGroup || '__main__';
+      if (groupKey !== prevGroupKey) {
+        setCell(ws, `A${cursor}`, { v: m.placementGroupLabel || 'ОСНОВНАЯ СЕТКА', s: STYLES.groupHeader });
+        for (let c = 1; c < TOTAL_C; c++) setCell(ws, `${COL(c + 1)}${cursor}`, { v: '', s: STYLES.groupHeader });
+        groupMerges.push({ s: { r: cursor - 1, c: 0 }, e: { r: cursor - 1, c: TOTAL_C - 1 } });
+        cursor++;
+        prevGroupKey = groupKey;
+      }
+      rowOf[m.id] = cursor;
+      cursor++;
+    });
+    const lastRow = cursor - 1;
 
     poMatches.forEach((m) => {
       const r = rowOf[m.id];
@@ -707,6 +755,9 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
 
       setCell(ws, `B${r}`, { v: m.id, s: rowStyle });
       setCell(ws, `C${r}`, { v: m.roundName, s: rowStyle });
+      const sched = matchScheduleIndex[m.id];
+      setCell(ws, `${COL(C.field)}${r}`, { v: sched ? sched.field : '', s: rowStyle });
+      setCell(ws, `${COL(C.time)}${r}`, { v: sched ? sched.time : '', s: { ...rowStyle, font: { ...(rowStyle.font || {}), }, alignment: { horizontal: 'center', vertical: 'center' } } });
       // Формулы победитель/проигравший. BYE проверяем ПЕРЕД сравнением счёта: если
       // соперник — пропуск, реальная команда проходит всегда, независимо от того,
       // вписан ли (ошибочно) счёт в эту строку — иначе шальной счёт в BYE-ячейке
@@ -769,11 +820,12 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
       fillTeam(C.t1);
       fillTeam(C.t2);
     });
-    ws['!ref'] = `A1:J${R + poMatches.length}`;
-    ws['!cols'] = [{ wch: 3 }, { wch: 5 }, { wch: 9 }, { wch: 24 }, { wch: 5 }, { wch: 3 }, { wch: 5 }, { wch: 24 }, { wch: 24 }, { wch: 24 }];
+    ws['!ref'] = `A1:${COL(TOTAL_C)}${lastRow}`;
+    ws['!cols'] = [{ wch: 3 }, { wch: 5 }, { wch: 9 }, { wch: 24 }, { wch: 5 }, { wch: 3 }, { wch: 5 }, { wch: 24 }, { wch: 24 }, { wch: 24 }, { wch: 12 }, { wch: 13 }];
     ws['!merges'] = [
-      { s: { r: 0, c: 0 }, e: { r: 0, c: 9 } },
-      { s: { r: 1, c: 0 }, e: { r: 1, c: 9 } },
+      { s: { r: 0, c: 0 }, e: { r: 0, c: TOTAL_C - 1 } },
+      { s: { r: 1, c: 0 }, e: { r: 1, c: TOTAL_C - 1 } },
+      ...groupMerges,
     ];
     XLSX.utils.book_append_sheet(wb, ws, 'Плей-офф');
   }
@@ -1597,6 +1649,20 @@ export default function TournamentBuilder() {
   const finishMin = lastDayStart + (lastPos.local + 1) * slotDur;
   const finishTime = minToTime(finishMin);
 
+  // Поле/время каждого матча по расписанию — используется в визуальной сетке
+  // плей-офф (вместо лого команд) и при публикации турнира онлайн.
+  const matchScheduleMap = {};
+  schedule.forEach((s) => {
+    const pos = slotToDay(s.slotIdx, dayOffsets, slotsInDay);
+    const dayStart = timeToMin((dayInfos[pos.day - 1] || dayInfos[0]).startTime);
+    matchScheduleMap[s.matchId] = {
+      day: pos.day,
+      startTime: minToTime(dayStart + pos.local * slotDur),
+      endTime: minToTime(dayStart + (pos.local + 1) * slotDur),
+      field: fieldNames[s.field] || `Поле ${s.field}`,
+    };
+  });
+
   const handleDownload = () => {
     try {
       const varRows = [];
@@ -1628,17 +1694,7 @@ export default function TournamentBuilder() {
     setPublishing(true);
     try {
       // Время/поле каждого матча — для расписания на странице родителей.
-      const matchSchedule = {};
-      schedule.forEach((s) => {
-        const pos = slotToDay(s.slotIdx, dayOffsets, slotsInDay);
-        const dayStart = timeToMin((dayInfos[pos.day - 1] || dayInfos[0]).startTime);
-        matchSchedule[s.matchId] = {
-          day: pos.day,
-          startTime: minToTime(dayStart + pos.local * slotDur),
-          endTime: minToTime(dayStart + (pos.local + 1) * slotDur),
-          field: fieldNames[s.field] || `Поле ${s.field}`,
-        };
-      });
+      const matchSchedule = matchScheduleMap;
       const publishMatches = matches.map((m) => ({
         id: m.id,
         label: m.phase === 'group' ? m.label : (m.roundName + (m.isBronze ? ' (бронза)' : '')),
@@ -2228,6 +2284,7 @@ export default function TournamentBuilder() {
   refereeNames={refereeNames}
   matchReferees={matchReferees}
   setMatchReferees={setMatchReferees}
+  matchScheduleMap={matchScheduleMap}
  />
  )}
 
@@ -2377,67 +2434,133 @@ function Metric({ label, value, colorClass, warning, inverted }) {
 
 // Один блок плей-офф (заголовок + список матчей) — переиспользуется и для одиночной
 // сетки, и для золотой/серебряной (тогда рендерится дважды с разным заголовком/списком).
-function PlayoffBracketBlock({ title, poMatches, scores, teamColors, teamLabel, resolveSlot, setScoreModal, setProtocolModal, setQrModal, refereeNames, matchReferees }) {
+// Визуальная сетка плей-офф: колонки раундов, скобки соединяют пары матчей,
+// в шапке каждого матча — поле/время из расписания (вместо лого команд).
+// Если в сетке есть распределение мест (5-8, 3-4 и т.п.) — вкладки сверху,
+// как у основной сетки на вылет.
+function PlayoffBracketBlock({ title, poMatches, allMatches, scores, teamColors, teamLabel, resolveSlot, setScoreModal, setProtocolModal, setQrModal, refereeNames, matchReferees, matchScheduleMap }) {
   const refereeLabel = (matchId) => resolveReferee((matchReferees || {})[matchId], refereeNames);
+  const byId = {};
+  (allMatches || poMatches).forEach((m) => { byId[m.id] = m; });
+  const groupKeyOf = (m) => m.placementGroup || '__main__';
+
+  const groupsMap = new Map();
+  poMatches.forEach((m) => {
+    const key = groupKeyOf(m);
+    if (!groupsMap.has(key)) groupsMap.set(key, { label: m.placementGroupLabel || 'Финал', matches: [] });
+    groupsMap.get(key).matches.push(m);
+  });
+  const groupKeys = [...groupsMap.keys()].sort((a, b) => (a === '__main__' ? -1 : b === '__main__' ? 1 : 0));
+  const [activeGroup, setActiveGroup] = useState(groupKeys[0]);
+  const safeActive = groupKeys.includes(activeGroup) ? activeGroup : groupKeys[0];
+  const activeMatches = groupsMap.get(safeActive)?.matches || [];
+
+  const MatchBox = ({ m }) => {
+    const sc = scores[m.id];
+    const played = sc && sc.a != null && sc.b != null;
+    const t1 = teamLabel(m, 't1'), t2 = teamLabel(m, 't2');
+    const resolved1 = resolveSlot ? resolveSlot(m.t1, m.bracket) : null;
+    const resolved2 = resolveSlot ? resolveSlot(m.t2, m.bracket) : null;
+    const sd1 = resolved1 ? resolved1.sid : null;
+    const sd2 = resolved2 ? resolved2.sid : null;
+    const sched = matchScheduleMap && matchScheduleMap[m.id];
+    const matchLabel = m.roundName + (m.isBronze ? ' (бронза)' : '');
+    return (
+      <div className="w-56 sm:w-64 bg-white border border-black/10 shadow-sm flex-shrink-0">
+        <div className="flex items-center justify-between gap-1 px-2 py-1 bg-[#f5f2ec] border-b border-black/10">
+          <div className="text-[9px] font-bold text-neutral-500 uppercase tracking-wider truncate">
+            {sched ? `📍 ${sched.field} · ${sched.startTime}` : `${m.roundName}${m.isBronze ? ' 🥉' : m.roundName === 'Финал' ? ' 🏆' : ''}`}
+          </div>
+          <div className="flex items-center gap-1.5 flex-shrink-0">
+            <button onClick={() => setProtocolModal({ matchId: m.id, matchLabel, t1Label: t1, t2Label: t2, sid1, sid2 })}
+              className="text-neutral-400 hover:text-[#e30613] text-xs leading-none" title="Печатный протокол">🖨</button>
+            <button onClick={() => setQrModal({ matchId: m.id, matchLabel })}
+              className="text-neutral-400 hover:text-[#e30613] text-xs leading-none" title="QR для судьи">▦</button>
+          </div>
+        </div>
+        <button onClick={() => setScoreModal({ matchId: m.id, sid1: sd1, sid2: sd2, t1Label: t1, t2Label: t2, matchLabel })}
+          className="w-full text-left hover:bg-[#f5f2ec] transition">
+          <div className={`flex items-center justify-between gap-2 px-2 py-1.5 border-b border-black/5 ${played && sc.a > sc.b ? 'font-black text-[#0c0c0c]' : played && sc.a < sc.b ? 'text-neutral-500' : ''}`}>
+            <span className="flex items-center gap-1.5 min-w-0 truncate text-sm">
+              {sd1 && teamColors[sd1] && <span className="inline-block w-1 h-3.5 flex-shrink-0" style={{ background: teamColors[sd1] }} />}
+              <span className="truncate">{t1}</span>
+            </span>
+            <span className="text-sm font-black tabular-nums flex-shrink-0">{played ? sc.a : '–'}</span>
+          </div>
+          <div className={`flex items-center justify-between gap-2 px-2 py-1.5 ${played && sc.b > sc.a ? 'font-black text-[#0c0c0c]' : played && sc.b < sc.a ? 'text-neutral-500' : ''}`}>
+            <span className="flex items-center gap-1.5 min-w-0 truncate text-sm">
+              {sd2 && teamColors[sd2] && <span className="inline-block w-1 h-3.5 flex-shrink-0" style={{ background: teamColors[sd2] }} />}
+              <span className="truncate">{t2}</span>
+            </span>
+            <span className="text-sm font-black tabular-nums flex-shrink-0">{played ? sc.b : '–'}</span>
+          </div>
+        </button>
+        {refereeLabel(m.id) && (
+          <div className="text-[9px] text-neutral-400 px-2 py-1 border-t border-black/5 truncate">👤 {refereeLabel(m.id)}</div>
+        )}
+      </div>
+    );
+  };
+
+  // Рекурсивный узел: если у матча есть "фидеры" (winFrom/loseFrom) из ТОЙ ЖЕ
+  // вкладки — рисуем их слева и соединяем скобкой; иначе матч — лист сетки
+  // (первый раунд или ссылка на матч из другой вкладки).
+  const BracketNode = ({ m }) => {
+    const feeders = m.winFrom || m.loseFrom;
+    const within = feeders && feeders.every((id) => byId[id] && groupKeyOf(byId[id]) === groupKeyOf(m));
+    if (!feeders || !within) return <MatchBox m={m} />;
+    const [aId, bId] = feeders;
+    return (
+      <div className="flex items-stretch">
+        <div className="flex flex-col justify-around gap-6">
+          <BracketNode m={byId[aId]} />
+          <BracketNode m={byId[bId]} />
+        </div>
+        <div className="w-5 sm:w-7 relative flex-shrink-0">
+          <div className="absolute left-0 right-1/2 top-1/4 bottom-1/4 border-t-2 border-b-2 border-r-2 border-neutral-300 rounded-r-md" />
+          <div className="absolute left-1/2 right-0 top-1/2 border-t-2 border-neutral-300" />
+        </div>
+        <MatchBox m={m} />
+      </div>
+    );
+  };
+
+  // Корни сетки на вкладке — матчи, на которые никто внутри вкладки не ссылается
+  // (финал; для распределения мест корней может быть несколько, напр. "5-6" и "7-8").
+  const referenced = new Set();
+  activeMatches.forEach((m) => {
+    const feeders = m.winFrom || m.loseFrom;
+    if (feeders) feeders.forEach((id) => { if (byId[id] && groupKeyOf(byId[id]) === groupKeyOf(m)) referenced.add(id); });
+  });
+  const roots = activeMatches.filter((m) => !referenced.has(m.id));
+
   return (
     <div className="bg-white border border-black/10">
-      <div className="px-4 py-3 bg-[#e30613] text-white flex items-baseline justify-between">
+      <div className="px-4 py-3 bg-[#e30613] text-white flex items-baseline justify-between flex-wrap gap-2">
         <h3 className="font-black uppercase tracking-widest text-xs">{title}</h3>
         <div className="text-[10px] font-bold tracking-widest text-white/70 uppercase">{poMatches.filter((m) => scores[m.id]).length} / {poMatches.length}</div>
       </div>
-      <div className="divide-y divide-black/5">
-        {poMatches.map((m) => {
-          const sc = scores[m.id];
-          const played = sc && sc.a != null && sc.b != null;
-          const t1 = teamLabel(m, 't1'), t2 = teamLabel(m, 't2');
-          const resolved1 = resolveSlot ? resolveSlot(m.t1, m.bracket) : null;
-          const resolved2 = resolveSlot ? resolveSlot(m.t2, m.bracket) : null;
-          const sd1 = resolved1 ? resolved1.sid : null;
-          const sd2 = resolved2 ? resolved2.sid : null;
-          return (
-            <div key={m.id} className="flex items-stretch hover:bg-[#f5f2ec] transition">
-              <button onClick={() => setScoreModal({ matchId: m.id, sid1: sd1, sid2: sd2, t1Label: t1, t2Label: t2, matchLabel: m.roundName + (m.isBronze ? ' (бронза)' : '') })}
-                className="flex-1 flex flex-col p-3 text-left min-w-0">
-                <div className="flex items-center gap-2 sm:gap-3 min-w-0">
-                  <div className="text-[10px] font-bold uppercase text-neutral-400 tracking-wider w-16 sm:w-20 flex-shrink-0">{m.roundName}{m.isBronze ? ' 🥉' : m.roundName === 'Финал' ? ' 🏆' : ''}</div>
-                  <div className="flex-1 flex items-center justify-between gap-3 min-w-0">
-                    <span className={`text-sm font-medium truncate flex items-center gap-1.5 ${played && sc.a > sc.b ? 'font-black text-[#0c0c0c]' : played && sc.a < sc.b ? 'text-neutral-500' : ''}`}>
-                      {sd1 && teamColors[sd1] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd1] }} />}
-                      <span className="truncate">{t1}</span>
-                    </span>
-                    {played ? (
-                      <span className="font-black text-base sm:text-lg tracking-tight flex-shrink-0">{sc.a}:{sc.b}</span>
-                    ) : (
-                      <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-400 flex-shrink-0">–:–</span>
-                    )}
-                    <span className={`text-sm font-medium truncate text-right flex items-center gap-1.5 justify-end ${played && sc.b > sc.a ? 'font-black text-[#0c0c0c]' : played && sc.b < sc.a ? 'text-neutral-500' : ''}`}>
-                      <span className="truncate">{t2}</span>
-                      {sd2 && teamColors[sd2] && <span className="inline-block w-1 h-4 flex-shrink-0" style={{ background: teamColors[sd2] }} />}
-                    </span>
-                  </div>
-                </div>
-                {refereeLabel(m.id) && (
-                  <div className="text-[10px] text-neutral-400 mt-1 pl-[4.75rem] sm:pl-24 truncate">👤 {refereeLabel(m.id)}</div>
-                )}
-              </button>
-              <button onClick={() => setProtocolModal({ matchId: m.id, matchLabel: m.roundName + (m.isBronze ? ' (бронза)' : ''), t1Label: t1, t2Label: t2, sid1, sid2 })}
-                className="w-11 flex items-center justify-center text-neutral-400 hover:text-[#e30613] border-l border-black/5" title="Печатный протокол">
-                <span className="text-lg">🖨</span>
-              </button>
-              <button onClick={() => setQrModal({ matchId: m.id, matchLabel: m.roundName + (m.isBronze ? ' (бронза)' : '') })}
-                className="w-11 flex items-center justify-center text-neutral-400 hover:text-[#e30613] border-l border-black/5" title="QR для судьи">
-                <span className="text-lg">▦</span>
-              </button>
-            </div>
-          );
-        })}
+      {groupKeys.length > 1 && (
+        <div className="flex border-b border-black/10 overflow-x-auto">
+          {groupKeys.map((key) => (
+            <button key={key} onClick={() => setActiveGroup(key)}
+              className={`px-3 py-2 text-[10px] font-bold uppercase tracking-widest whitespace-nowrap border-b-2 transition ${safeActive === key ? 'border-[#e30613] text-[#0c0c0c]' : 'border-transparent text-neutral-400 hover:text-[#0c0c0c]'}`}>
+              {key === '__main__' ? 'Плей-офф' : groupsMap.get(key).label}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className="p-4 sm:p-6 overflow-x-auto">
+        <div className="flex flex-col gap-8 w-max">
+          {roots.map((m) => <BracketNode key={m.id} m={m} />)}
+        </div>
       </div>
     </div>
   );
 }
 
 // ============ ЭКРАН «ТУРНИР» ============
-function TournamentView({ groups, matches, scores, setScores, teamNames, setTeamNames, teamColors, setTeamColors, teamName, teamLabel, resolveSlot, allStandings, actualSystem, setScoreModal, setImportModal, setQrModal, setProtocolModal, refereeMode, refereeNames, matchReferees, setMatchReferees }) {
+function TournamentView({ groups, matches, scores, setScores, teamNames, setTeamNames, teamColors, setTeamColors, teamName, teamLabel, resolveSlot, allStandings, actualSystem, setScoreModal, setImportModal, setQrModal, setProtocolModal, refereeMode, refereeNames, matchReferees, setMatchReferees, matchScheduleMap }) {
   const [editingTeams, setEditingTeams] = useState(false);
   // Имя судьи матча (по id из справочника, либо свободный текст в manual-режиме)
   const refereeLabel = (matchId) => resolveReferee((matchReferees || {})[matchId], refereeNames);
@@ -2614,15 +2737,15 @@ function TournamentView({ groups, matches, scores, setScores, teamNames, setTeam
           if (bMatches.length === 0) return null;
           return (
             <PlayoffBracketBlock key={bracketKey} title={bracketKey === 'gold' ? '🥇 Золотой плей-офф' : '🥈 Серебряный плей-офф'}
-              poMatches={bMatches} scores={scores} teamColors={teamColors} teamLabel={teamLabel} resolveSlot={resolveSlot}
+              poMatches={bMatches} allMatches={matches} scores={scores} teamColors={teamColors} teamLabel={teamLabel} resolveSlot={resolveSlot}
               setScoreModal={setScoreModal} setProtocolModal={setProtocolModal} setQrModal={setQrModal}
-              refereeNames={refereeNames} matchReferees={matchReferees} />
+              refereeNames={refereeNames} matchReferees={matchReferees} matchScheduleMap={matchScheduleMap} />
           );
         })
       ) : poMatches.length > 0 && (
-        <PlayoffBracketBlock title="🏆 Плей-офф" poMatches={poMatches} scores={scores} teamColors={teamColors} teamLabel={teamLabel}
+        <PlayoffBracketBlock title="🏆 Плей-офф" poMatches={poMatches} allMatches={matches} scores={scores} teamColors={teamColors} teamLabel={teamLabel}
           resolveSlot={resolveSlot} setScoreModal={setScoreModal} setProtocolModal={setProtocolModal} setQrModal={setQrModal}
-          refereeNames={refereeNames} matchReferees={matchReferees} />
+          refereeNames={refereeNames} matchReferees={matchReferees} matchScheduleMap={matchScheduleMap} />
       )}
 
       {/* Сброс */}
