@@ -100,35 +100,105 @@ Check your Browserslist config to be sure that your targets are set up correctly
 </script></head>
 <body><!-- BEGIN_PASSWORD_GATE -->
 <div id="msg-gate" style="position:fixed;inset:0;z-index:99999;background:#0c0c0c;color:#fff;display:flex;align-items:center;justify-content:center;font-family:'Inter',Arial,sans-serif;padding:24px;">
-  <form id="msg-gate-form" style="width:100%;max-width:340px;text-align:center;">
-    <div style="font-weight:900;font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:#e30613;margin-bottom:10px;">MSG · Конструктор турниров</div>
-    <h1 style="margin:0 0 22px;font-size:22px;font-weight:800;">Доступ по паролю</h1>
-    <input id="msg-gate-pass" type="password" placeholder="Пароль" autocomplete="off" style="width:100%;box-sizing:border-box;padding:14px;border:1px solid rgba(255,255,255,.25);background:#161616;color:#fff;font-size:16px;border-radius:2px;margin-bottom:12px;" />
-    <button type="submit" style="width:100%;padding:14px;background:#e30613;color:#fff;border:0;font-weight:900;letter-spacing:.06em;text-transform:uppercase;font-size:14px;cursor:pointer;border-radius:2px;">Войти</button>
-    <div id="msg-gate-error" style="display:none;margin-top:12px;color:#ff5b63;font-size:13px;font-weight:600;">Неверный пароль, попробуйте ещё раз.</div>
-  </form>
+  <div style="width:100%;max-width:340px;">
+    <form id="msg-gate-form" style="text-align:center;">
+      <div style="font-weight:900;font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:#e30613;margin-bottom:10px;">MSG · Конструктор турниров</div>
+      <h1 style="margin:0 0 22px;font-size:22px;font-weight:800;">Доступ по паролю</h1>
+      <input id="msg-gate-pass" type="password" placeholder="Пароль" autocomplete="off" style="width:100%;box-sizing:border-box;padding:14px;border:1px solid rgba(255,255,255,.25);background:#161616;color:#fff;font-size:16px;border-radius:2px;margin-bottom:12px;" />
+      <button type="submit" style="width:100%;padding:14px;background:#e30613;color:#fff;border:0;font-weight:900;letter-spacing:.06em;text-transform:uppercase;font-size:14px;cursor:pointer;border-radius:2px;">Войти</button>
+      <div id="msg-gate-error" style="display:none;margin-top:12px;color:#ff5b63;font-size:13px;font-weight:600;">Неверный пароль, попробуйте ещё раз.</div>
+      <button type="button" id="msg-gate-forgot" style="margin-top:18px;background:none;border:0;color:rgba(255,255,255,.6);font-size:13px;text-decoration:underline;cursor:pointer;">Забыли пароль? Запросить доступ</button>
+    </form>
+    <form id="msg-req-form" style="display:none;text-align:center;">
+      <div style="font-weight:900;font-size:13px;letter-spacing:.18em;text-transform:uppercase;color:#e30613;margin-bottom:10px;">MSG · Конструктор турниров</div>
+      <h1 style="margin:0 0 10px;font-size:22px;font-weight:800;">Запросить доступ</h1>
+      <p style="margin:0 0 18px;color:rgba(255,255,255,.65);font-size:13px;line-height:1.5;">Заявка уйдёт Григорию на почту и в Telegram — он пришлёт пароль в ответ.</p>
+      <input id="msg-req-name" type="text" placeholder="Ваше имя" autocomplete="off" style="width:100%;box-sizing:border-box;padding:14px;border:1px solid rgba(255,255,255,.25);background:#161616;color:#fff;font-size:16px;border-radius:2px;margin-bottom:12px;" />
+      <input id="msg-req-contact" type="text" placeholder="Телефон или Telegram" autocomplete="off" style="width:100%;box-sizing:border-box;padding:14px;border:1px solid rgba(255,255,255,.25);background:#161616;color:#fff;font-size:16px;border-radius:2px;margin-bottom:12px;" />
+      <button type="submit" id="msg-req-submit" style="width:100%;padding:14px;background:#e30613;color:#fff;border:0;font-weight:900;letter-spacing:.06em;text-transform:uppercase;font-size:14px;cursor:pointer;border-radius:2px;">Отправить запрос</button>
+      <div id="msg-req-status" style="display:none;margin-top:14px;font-size:13px;font-weight:600;line-height:1.5;"></div>
+      <button type="button" id="msg-req-back" style="margin-top:18px;background:none;border:0;color:rgba(255,255,255,.6);font-size:13px;text-decoration:underline;cursor:pointer;">Назад ко входу</button>
+    </form>
+  </div>
 </div>
 <script>
 (function(){
   var KEY = 'msgTournamentAuth';
   var PASS = 'sudya2026';
+  var ENDPOINT = 'https://script.google.com/macros/s/AKfycbwlu3wo1eiOQ9AVph-kxTruT_n0G4WXKBZoFXgHdsyPd8n1O8LGJEJNBKQA3_ydP2V9Fg/exec';
   var gate = document.getElementById('msg-gate');
   if (localStorage.getItem(KEY) === '1') {
     gate.remove();
-  } else {
-    document.getElementById('msg-gate-form').addEventListener('submit', function(e){
-      e.preventDefault();
-      var val = document.getElementById('msg-gate-pass').value;
-      if (val === PASS) {
-        localStorage.setItem(KEY, '1');
-        gate.remove();
-      } else {
-        document.getElementById('msg-gate-error').style.display = 'block';
-        document.getElementById('msg-gate-pass').value = '';
-        document.getElementById('msg-gate-pass').focus();
-      }
-    });
+    return;
   }
+
+  var loginForm = document.getElementById('msg-gate-form');
+  var reqForm = document.getElementById('msg-req-form');
+
+  loginForm.addEventListener('submit', function(e){
+    e.preventDefault();
+    var val = document.getElementById('msg-gate-pass').value;
+    if (val === PASS) {
+      localStorage.setItem(KEY, '1');
+      gate.remove();
+    } else {
+      document.getElementById('msg-gate-error').style.display = 'block';
+      document.getElementById('msg-gate-pass').value = '';
+      document.getElementById('msg-gate-pass').focus();
+    }
+  });
+
+  document.getElementById('msg-gate-forgot').addEventListener('click', function(){
+    loginForm.style.display = 'none';
+    reqForm.style.display = 'block';
+  });
+  document.getElementById('msg-req-back').addEventListener('click', function(){
+    reqForm.style.display = 'none';
+    loginForm.style.display = 'block';
+  });
+
+  reqForm.addEventListener('submit', function(e){
+    e.preventDefault();
+    var name = document.getElementById('msg-req-name').value.trim();
+    var contact = document.getElementById('msg-req-contact').value.trim();
+    var status = document.getElementById('msg-req-status');
+    if (!name || !contact) {
+      status.style.display = 'block';
+      status.style.color = '#ff5b63';
+      status.textContent = 'Заполните имя и контакт.';
+      return;
+    }
+    var submitBtn = document.getElementById('msg-req-submit');
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Отправляем...';
+
+    fetch(ENDPOINT, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({
+        'Тип': 'Запрос пароля — Конструктор турниров',
+        'Имя': name,
+        'Контакт': contact,
+        'Страница': window.location.href,
+        'Время заявки': new Date().toLocaleString('ru-RU', { timeZone: 'Europe/Moscow' })
+      })
+    }).then(function(){
+      status.style.display = 'block';
+      status.style.color = '#5fdc8f';
+      status.textContent = 'Заявка отправлена. Григорий свяжется с вами и пришлёт пароль.';
+      document.getElementById('msg-req-name').value = '';
+      document.getElementById('msg-req-contact').value = '';
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Отправить запрос';
+    }).catch(function(){
+      status.style.display = 'block';
+      status.style.color = '#ff5b63';
+      status.textContent = 'Не получилось отправить. Напишите Григорию напрямую.';
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Отправить запрос';
+    });
+  });
 })();
 </script>
 <!-- END_PASSWORD_GATE -->
