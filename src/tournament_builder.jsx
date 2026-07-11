@@ -451,7 +451,8 @@ const STYLES = {
 const setCell = (ws, addr, cell) => { ws[addr] = cell; };
 const styled = (cell, style) => ({ ...cell, s: style });
 
-const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames = {}, varRows = [], refereeInfo = null) => {
+const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames = {}, varRows = [], refereeInfo = null, tournamentName = '') => {
+  const tName = (tournamentName || 'Турнир').trim();
   const refereeNamesMap = refereeInfo?.names || {};
   const matchRefereesMap = refereeInfo?.byMatch || {};
   const refereeLabelFor = (matchId) => resolveReferee(matchRefereesMap[matchId], refereeNamesMap);
@@ -490,7 +491,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
   const teamNameRef = {}; // sid -> "Команды!$C$N" (абсолютная ссылка)
   {
     const rows = [
-      [{ v: 'СПИСОК КОМАНД', s: STYLES.pageTitle }, '', '', '', ''],
+      [{ v: tName + ' · СПИСОК КОМАНД', s: STYLES.pageTitle }, '', '', '', ''],
       [{ v: 'Впишите названия в колонку «Команда». Они автоматически появятся во всех листах.', s: STYLES.instruction }, '', '', '', ''],
       [],
       [
@@ -543,7 +544,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
   // Показывает кто в какой группе. Имена — формулы со ссылкой на лист Команды.
   if (numGroups > 0) {
     const rows = [
-      [{ v: 'СОСТАВ ГРУПП', s: STYLES.pageTitle }, ''],
+      [{ v: tName + ' · СОСТАВ ГРУПП', s: STYLES.pageTitle }, ''],
       [{ v: 'Имена тянутся из листа «Команды». Состав групп меняется автоматически при изменении количества команд в конструкторе.', s: STYLES.instruction }, ''],
       [],
     ];
@@ -581,7 +582,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
     const ws = {};
     let R = 1;
     // Заголовок страницы
-    setCell(ws, `A${R}`, { v: 'ШАХМАТКИ', s: STYLES.pageTitle });
+    setCell(ws, `A${R}`, { v: tName + ' · ШАХМАТКИ', s: STYLES.pageTitle });
     R++;
     setCell(ws, `A${R}`, { v: 'Впишите счёт каждого матча в формате X:Y (например 3:1) в жёлтых ячейках ВЕРХНЕЙ части матрицы. Серые ячейки нижней части заполнятся зеркально автоматически. Очки, разница и места считаются сами.', s: STYLES.instruction });
     R++; R++;
@@ -713,7 +714,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
     groupOrder.sort((a, b) => (a === '__main__' ? -1 : b === '__main__' ? 1 : 0));
 
     const ws = {};
-    setCell(ws, 'A1', { v: 'СЕТКА ПЛЕЙ-ОФФ', s: STYLES.pageTitle });
+    setCell(ws, 'A1', { v: tName + ' · СЕТКА ПЛЕЙ-ОФФ', s: STYLES.pageTitle });
     setCell(ws, 'A2', { v: 'Вписывайте голы в жёлтые ячейки — победитель и следующий раунд считаются сами, команды продвигаются по сетке автоматически.', s: STYLES.instruction });
 
     // Раунды идут колонками: у каждого матча 2 колонки (команда+счёт), между
@@ -936,7 +937,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
 
     const ws = {};
     let R = 1;
-    setCell(ws, `A${R}`, { v: 'РАСПИСАНИЕ', s: STYLES.pageTitle });
+    setCell(ws, `A${R}`, { v: tName + ' · РАСПИСАНИЕ', s: STYLES.pageTitle });
     R++;
     const totalDays = sorted.length === 0 ? 1 : Math.floor(sorted[sorted.length-1] / slotsPerDay) + 1;
     setCell(ws, `A${R}`, { v: `Старт ${startTime} · слот ${slotDur} мин · полей ${fields} · дней ${totalDays}. Времена и имена команд считаются автоматически. Судью можно выбрать из списка в колонке «Судья».`, s: STYLES.instruction });
@@ -1046,7 +1047,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
       'mixed-goldsilver': 'Смешанная (золото/серебро)', 'mixed-goldsilver-full': 'Смешанная (золото/серебро, все места)',
     }[system];
     const rows = [
-      [{ v: 'ПАРАМЕТРЫ ТУРНИРА', s: STYLES.pageTitle }, ''],
+      [{ v: tName + ' · ПАРАМЕТРЫ ТУРНИРА', s: STYLES.pageTitle }, ''],
       [],
       [{ v: 'Команд', s: STYLES.cellName }, { v: totalTeams, s: STYLES.cell }],
       [{ v: 'Полей', s: STYLES.cellName }, { v: fields, s: STYLES.cell }],
@@ -1093,7 +1094,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
   // ===== ЛИСТ: VAR (зафиксированные в приложении эпизоды) =====
   if (varRows.length > 0) {
     const rows = [
-      [{ v: 'VAR / СОБЫТИЯ МАТЧЕЙ', s: STYLES.pageTitle }, '', '', '', ''],
+      [{ v: tName + ' · VAR / СОБЫТИЯ МАТЧЕЙ', s: STYLES.pageTitle }, '', '', '', ''],
       [{ v: 'Эпизоды, зафиксированные в приложении при вводе счёта.', s: STYLES.instruction }, '', '', '', ''],
       [],
       [
@@ -1197,7 +1198,8 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
 
   // Скачать как Blob
   const date = new Date().toISOString().slice(0, 10);
-  const filename = `tournament_${totalTeams}t_${system}_${date}.xlsx`;
+  const safeName = tName.replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, '_').slice(0, 60).replace(/^_+|_+$/g, '');
+  const filename = `${safeName || 'tournament'}_${totalTeams}t_${date}.xlsx`;
   const blob = new Blob([newZipBytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -1766,7 +1768,7 @@ export default function TournamentBuilder() {
           });
         });
       });
-      generateXLSX(eff, structure, matches, schedule, slotDur, fieldNames, varRows, { names: refereeNames, byMatch: matchReferees });
+      generateXLSX(eff, structure, matches, schedule, slotDur, fieldNames, varRows, { names: refereeNames, byMatch: matchReferees }, tournamentName);
     }
     catch (e) { alert('Ошибка генерации: ' + e.message); console.error(e); }
   };
