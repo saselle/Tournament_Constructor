@@ -1943,6 +1943,11 @@ export default function TournamentBuilder() {
  <div className="bg-white rounded border border-black/10 p-4 sm:p-5">
  <h2 className="text-xs font-black text-[#0c0c0c] mb-4 uppercase tracking-widest flex items-center gap-2"><Settings className="w-5 h-5" />Параметры</h2>
  <div className="space-y-3">
+ <Field label="Название турнира">
+ <input type="text" value={tournamentName} maxLength={80}
+ onChange={(e) => setTournamentName(e.target.value)}
+ placeholder="Например: Кубок весны 2026" className="inp" />
+ </Field>
  <Field label="Команд (4–512)">
  <BoundedNumber value={params.totalTeams} min={4} max={512}
  onCommit={(n) => setParams({ ...params, totalTeams: n })} />
