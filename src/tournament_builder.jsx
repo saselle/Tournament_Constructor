@@ -1428,6 +1428,7 @@ export default function TournamentBuilder() {
   const [tournamentsIndex, setTournamentsIndex] = useState([]);
   const [tournamentId, setTournamentId] = useState(null);
   const [tournamentName, setTournamentName] = useState('Турнир');
+  const [tournamentLogo, setTournamentLogo] = useState(''); // эмблема турнира (data URL)
   const [showDashboard, setShowDashboard] = useState(false);
 
   // Онлайн-синхронизация: если турнир опубликован, тут лежит его id на бэкенде
@@ -1465,6 +1466,7 @@ export default function TournamentBuilder() {
     setRefereeNames(saved.refereeNames || {});
     setMatchReferees(saved.matchReferees || {});
     setOnlineId(saved.onlineId || null);
+    setTournamentLogo(saved.tournamentLogo || '');
   };
 
   const createTournament = () => {
@@ -1502,6 +1504,35 @@ export default function TournamentBuilder() {
     if (id === tournamentId) setTournamentName(trimmed);
   };
 
+  // Загрузка эмблемы турнира: сжимаем до 256px и храним как data URL
+  const handleLogoUpload = (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type || file.type.indexOf('image/') !== 0) { alert('Выберите файл изображения (PNG, JPG, SVG).'); return; }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxSize = 256;
+        const scale = Math.min(1, maxSize / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        try { setTournamentLogo(canvas.toDataURL('image/png')); }
+        catch (err) { alert('Не удалось обработать изображение.'); }
+      };
+      img.onerror = () => alert('Не удалось загрузить изображение.');
+      img.src = ev.target.result;
+    };
+    reader.onerror = () => alert('Не удалось прочитать файл.');
+    reader.readAsDataURL(file);
+  };
+
   // Загрузка списка турниров при монтировании (с разовой миграцией старого формата)
   useEffect(() => {
     let list = migrateLegacyTournament();
@@ -1517,7 +1548,7 @@ export default function TournamentBuilder() {
   useEffect(() => {
     if (!tournamentId) return; // ждём завершения начальной загрузки
     try {
-      localStorage.setItem(tournamentDataKey(tournamentId), JSON.stringify({ params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, drawOrder, refereeNames, matchReferees, onlineId }));
+      localStorage.setItem(tournamentDataKey(tournamentId), JSON.stringify({ params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, drawOrder, refereeNames, matchReferees, onlineId, tournamentLogo }));
       setTournamentsIndex((prev) => {
         const next = prev.map((t) => (t.id === tournamentId
           ? { ...t, name: tournamentName, savedAt: Date.now(), totalTeams: params.totalTeams, system: params.system }
@@ -1526,7 +1557,7 @@ export default function TournamentBuilder() {
         return next;
       });
     } catch (e) { console.error('save failed', e); }
-  }, [tournamentId, params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, drawOrder, refereeNames, matchReferees, tournamentName, onlineId]);
+  }, [tournamentId, params, teamNames, teamColors, scores, matchDurMode, manualDur, fieldNames, minRest, blockedSlots, dayWindows, drawOrder, refereeNames, matchReferees, tournamentName, tournamentLogo, onlineId]);
 
   const dayMin = timeToMin(params.endTime) - timeToMin(params.startTime);
   const availMin = Math.max(60, dayMin - 30);
@@ -1795,7 +1826,7 @@ export default function TournamentBuilder() {
         bracket: m.bracket || null,
         schedule: matchSchedule[m.id] || null,
       }));
-      const payload = { name: tournamentName, params: eff, teamNames, teamColors, matches: publishMatches, structure };
+      const payload = { name: tournamentName, logo: tournamentLogo, params: eff, teamNames, teamColors, matches: publishMatches, structure };
       const url = onlineId ? `${SYNC_BACKEND_URL}/api/tournaments/${onlineId}` : `${SYNC_BACKEND_URL}/api/tournaments`;
       const res = await fetch(url, {
         method: onlineId ? 'PUT' : 'POST',
@@ -1911,7 +1942,7 @@ export default function TournamentBuilder() {
    </button>
  )}
  <button onClick={() => setShowDashboard(true)} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold text-neutral-600 hover:text-[#0c0c0c] border border-black/10 rounded-sm flex-shrink-0">
-   <span>📁</span><span className="max-w-[8rem] sm:max-w-[10rem] truncate">{tournamentName}</span>
+   {tournamentLogo ? <img src={tournamentLogo} alt="" className="w-4 h-4 object-contain flex-shrink-0" /> : <span>📁</span>}<span className="max-w-[8rem] sm:max-w-[10rem] truncate">{tournamentName}</span>
  </button>
  </div>
  </div>
@@ -1949,6 +1980,23 @@ export default function TournamentBuilder() {
  <input type="text" value={tournamentName} maxLength={80}
  onChange={(e) => setTournamentName(e.target.value)}
  placeholder="Например: Кубок весны 2026" className="inp" />
+ </Field>
+ <Field label="Эмблема турнира">
+ {tournamentLogo ? (
+ <div className="flex items-center gap-2">
+ <img src={tournamentLogo} alt="Эмблема турнира" className="w-12 h-12 object-contain border border-black/10 rounded bg-white flex-shrink-0" />
+ <label className="px-2.5 py-1.5 text-xs font-bold text-neutral-600 hover:text-[#0c0c0c] border border-black/10 rounded-sm cursor-pointer whitespace-nowrap">
+ Заменить
+ <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
+ </label>
+ <button type="button" onClick={() => setTournamentLogo('')} className="px-2.5 py-1.5 text-xs font-bold text-neutral-400 hover:text-[#e30613] border border-black/10 rounded-sm whitespace-nowrap">Убрать</button>
+ </div>
+ ) : (
+ <label className="inp flex items-center justify-center gap-2 cursor-pointer text-neutral-500 hover:text-[#0c0c0c] hover:border-[#e30613]">
+ <span className="text-base leading-none">＋</span><span>Загрузить эмблему</span>
+ <input type="file" accept="image/*" className="hidden" onChange={handleLogoUpload} />
+ </label>
+ )}
  </Field>
  <Field label="Команд (4–512)">
  <BoundedNumber value={params.totalTeams} min={4} max={512}
