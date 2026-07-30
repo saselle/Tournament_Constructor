@@ -44,18 +44,20 @@ const playoffSeeds = (bracketSize) => {
 
 const splitIntoGroups = (totalTeams, groupSize, order) => {
   // Последовательное распределение: команды 1..N в группу 1, N+1..2N в группу 2, и т.д.
-  // Если totalTeams не делится нацело — экстра-команды попадают в ПОСЛЕДНИЕ группы
-  // (нормальная практика для турниров: первые группы держат заявленный размер, в последних +1).
+  // Число групп = ceil(totalTeams / groupSize) — «команд в группе» задаёт РАЗМЕР группы
+  // (не минимум). Пример: 14 команд, размер 5 → 3 группы (5+5+4), а не 2 по 7.
+  // Если totalTeams не делится нацело — остаток убирается из ПОСЛЕДНИХ групп, поэтому
+  // первые группы полные (заявленный размер), последняя — неполная.
   // `order` (опционально) — результат жеребьёвки: массив sid в том порядке, в котором их
   // раскладывают по группам (см. generateDrawOrder). По умолчанию — просто 1..N.
   const seq = (order && order.length === totalTeams) ? order : Array.from({ length: totalTeams }, (_, i) => i + 1);
-  const numGroups = Math.max(1, Math.floor(totalTeams / groupSize));
+  const numGroups = Math.max(1, Math.ceil(totalTeams / groupSize));
   const base = Math.floor(totalTeams / numGroups);
   const extra = totalTeams - base * numGroups; // 0 <= extra < numGroups
   const groups = [];
   let idx = 0;
   for (let g = 0; g < numGroups; g++) {
-    const sz = g >= numGroups - extra ? base + 1 : base;
+    const sz = g < extra ? base + 1 : base;
     const teams = [];
     for (let i = 0; i < sz; i++) teams.push(seq[idx++]);
     groups.push(teams);
@@ -90,7 +92,7 @@ const generateDrawOrder = (mode, totalTeams, groupSize, numSeeds) => {
   const seq = Array.from({ length: totalTeams }, (_, i) => i + 1);
   if (mode === 'random') return shuffleArr(seq);
   if (mode === 'seeded') {
-    const numGroups = Math.max(1, Math.floor(totalTeams / groupSize));
+    const numGroups = Math.max(1, Math.ceil(totalTeams / groupSize));
     const base = Math.floor(totalTeams / numGroups);
     const extra = totalTeams - base * numGroups;
     const seedCount = Math.max(0, Math.min(numSeeds || 0, numGroups, totalTeams));
@@ -99,7 +101,7 @@ const generateDrawOrder = (mode, totalTeams, groupSize, numSeeds) => {
     const order = [];
     let restIdx = 0;
     for (let g = 0; g < numGroups; g++) {
-      const sz = g >= numGroups - extra ? base + 1 : base;
+      const sz = g < extra ? base + 1 : base;
       const chunk = [];
       if (g < seeds.length) chunk.push(seeds[g]);
       while (chunk.length < sz && restIdx < rest.length) chunk.push(rest[restIdx++]);
@@ -108,6 +110,52 @@ const generateDrawOrder = (mode, totalTeams, groupSize, numSeeds) => {
     return order;
   }
   return seq; // 'sequential'
+};
+
+// Слоты выхода в золотой/серебряный плей-офф. Возвращает { gold:[{group,place}], silver:[...] }
+// в порядке посева — «место-мажор, группа-минор» (все 1-е места, затем все 2-е и т.д.).
+// Режим 'places' — фиксированное число мест из КАЖДОЙ группы (goldPlaces → золото, следующие
+// silverPlaces → серебро). Режим 'count' — заданное ОБЩЕЕ число команд (goldCount → золото,
+// следующие silverCount → серебро); неполный «тир» мест добирается по номеру группы (Гр.1, Гр.2…).
+const goldSilverSlots = (groups, cfg) => {
+  const ng = groups.length;
+  const sizes = groups.map((g) => g.length);
+  const maxPlace = sizes.length ? Math.max(...sizes) : 0;
+  const ranked = [];
+  for (let p = 1; p <= maxPlace; p++)
+    for (let g = 1; g <= ng; g++)
+      if (p <= sizes[g - 1]) ranked.push({ group: g, place: p });
+  const c = cfg || {};
+  if (c.mode === 'count') {
+    const gc = Math.max(0, Math.min(Math.round(c.goldCount) || 0, ranked.length));
+    const sc = Math.max(0, Math.min(Math.round(c.silverCount) || 0, ranked.length - gc));
+    return { gold: ranked.slice(0, gc), silver: ranked.slice(gc, gc + sc) };
+  }
+  const gp = Math.max(0, Math.round(c.goldPlaces) || 0);
+  const sp = Math.max(0, Math.round(c.silverPlaces) || 0);
+  return {
+    gold: ranked.filter((s) => s.place <= gp),
+    silver: ranked.filter((s) => s.place > gp && s.place <= gp + sp),
+  };
+};
+
+// Приводит настройки золото/серебро из params к аргументу goldSilverSlots.
+const gsCfgFrom = (params) => ({
+  mode: params.poMode === 'count' ? 'count' : 'places',
+  goldPlaces: params.goldPlaces == null ? 1 : params.goldPlaces,
+  silverPlaces: params.silverPlaces == null ? 1 : params.silverPlaces,
+  goldCount: params.goldCount == null ? 0 : params.goldCount,
+  silverCount: params.silverCount == null ? 0 : params.silverCount,
+});
+
+// Эффективный тип сетки (full = розыгрыш всех мест) для золота/серебра.
+// Если отдельное поле не задано — берём из выбранной системы (…-full → обе сетки full).
+const gsBracketFull = (params, system) => {
+  const def = system === 'mixed-goldsilver-full';
+  return {
+    goldFull: params.goldFull == null ? def : !!params.goldFull,
+    silverFull: params.silverFull == null ? def : !!params.silverFull,
+  };
 };
 
 const countGames = (sys, totalTeams, groupSize, advance) => {
@@ -347,14 +395,21 @@ const buildMatches = (params) => {
     matches.push(...res.matches);
     id = res.nextId;
   } else if (system === 'mixed-goldsilver' || system === 'mixed-goldsilver-full') {
-    // 1-е места групп -> золотой плей-офф, 2-е места -> серебряный. Каждая сетка независима.
-    const full = system === 'mixed-goldsilver-full';
-    const gold = buildBracketMatches(id, numGroups, { bracket: 'gold', fullPlacement: full });
-    matches.push(...gold.matches);
-    id = gold.nextId;
-    const silver = buildBracketMatches(id, numGroups, { bracket: 'silver', fullPlacement: full });
-    matches.push(...silver.matches);
-    id = silver.nextId;
+    // Заданные места групп -> золотой плей-офф, следующие -> серебряный. Каждая сетка независима,
+    // число команд и тип сетки (олимпийка / все места) настраиваются отдельно для золота и серебра.
+    const gsGroups = splitIntoGroups(totalTeams, groupSize, drawOrder);
+    const slots = goldSilverSlots(gsGroups, gsCfgFrom(params));
+    const { goldFull, silverFull } = gsBracketFull(params, system);
+    if (slots.gold.length) {
+      const gold = buildBracketMatches(id, slots.gold.length, { bracket: 'gold', fullPlacement: goldFull });
+      matches.push(...gold.matches);
+      id = gold.nextId;
+    }
+    if (slots.silver.length) {
+      const silver = buildBracketMatches(id, slots.silver.length, { bracket: 'silver', fullPlacement: silverFull });
+      matches.push(...silver.matches);
+      id = silver.nextId;
+    }
   }
   return matches;
 };
@@ -480,6 +535,8 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
   const isGoldSilver = system === 'mixed-goldsilver' || system === 'mixed-goldsilver-full';
   const groups = hasGroups ? splitIntoGroups(totalTeams, groupSize, drawOrder) : [];
   const numGroups = groups.length;
+  const gsSlots = (system === 'mixed-goldsilver' || system === 'mixed-goldsilver-full')
+    ? goldSilverSlots(groups, gsCfgFrom(params)) : { gold: [], silver: [] };
 
   // ===== РАСПРЕДЕЛЕНИЕ КОМАНД =====
   // Команды циклически разнесены по группам внутри splitIntoGroups.
@@ -843,11 +900,12 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
             if (sd > m.playoffTeams) {
               setCell(ws, addr, { v: 'BYE', s: { ...rowStyle, font: { ...(rowStyle.font || {}), italic: true, color: { rgb: '94A3B8' } } } });
             } else if (m.bracket === 'gold' || m.bracket === 'silver') {
-              // Золото/серебро: сид N — это группа N, место фиксировано (1-е для золота, 2-е для серебра)
-              const placeIdx = m.bracket === 'gold' ? 1 : 2;
-              const grIdx = sd;
+              // Золото/серебро: сид N — это N-й слот выхода {группа, место} в порядке посева
+              const slot = (m.bracket === 'gold' ? gsSlots.gold : gsSlots.silver)[sd - 1];
+              const grIdx = slot ? slot.group : sd;
+              const placeIdx = slot ? slot.place : (m.bracket === 'gold' ? 1 : 2);
               const key = `G${grIdx}:${placeIdx}`;
-              const placeOrd = placeIdx === 1 ? '1-е' : '2-е';
+              const placeOrd = ['', '1-е', '2-е', '3-е', '4-е', '5-е', '6-е', '7-е', '8-е'][placeIdx] || `${placeIdx}-е`;
               const fall = `${placeOrd} место Гр.${grIdx}`;
               setCell(ws, addr, placeFormula[key]
                 ? { f: `IFERROR(${placeFormula[key]},"${fall}")`, s: rowStyle }
@@ -1080,7 +1138,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
     } else {
       rows.push([{ v: '1.', s: STYLES.cell }, { v: 'На листе «Команды» впишите названия. Они автоматически распределятся по группам', s: STYLES.cellName }]);
       rows.push([{ v: '2.', s: STYLES.cell }, { v: 'На листе «Шахматки» вписывайте голы — очки и места считаются сами', s: STYLES.cellName }]);
-      rows.push([{ v: '3.', s: STYLES.cell }, { v: isGoldSilver ? 'В золотой плей-офф выходят 1-е места групп, в серебряный — 2-е. Вписывайте голы — победители проходят сами' : ('В сетке плей-офф первые ' + advance + ' места из групп подставятся автоматически. Вписывайте голы — победители проходят сами'), s: STYLES.cellName }]);
+      rows.push([{ v: '3.', s: STYLES.cell }, { v: isGoldSilver ? 'В золотой и серебряный плей-офф выходят выбранные места групп (подставляются автоматически). Вписывайте голы — победители проходят сами' : ('В сетке плей-офф первые ' + advance + ' места из групп подставятся автоматически. Вписывайте голы — победители проходят сами'), s: STYLES.cellName }]);
       rows.push([{ v: '4.', s: STYLES.cell }, { v: 'Лист «Расписание» — календарь матчей по полям и слотам', s: STYLES.cellName }]);
     }
     const ws = aoa(rows);
@@ -1402,6 +1460,9 @@ export default function TournamentBuilder() {
     scheduleMode: 'sequential', restMode: 'auto', maxGamesPerDay: null,
     drawMode: 'sequential', numSeeds: 4,
     refereeMode: 'manual',
+    // Золото/серебро: режим отбора и число мест/команд; тип сетки (null = из системы)
+    poMode: 'places', goldPlaces: 1, silverPlaces: 1, goldCount: 8, silverCount: 8,
+    goldFull: null, silverFull: null,
   });
   const [matchDurMode, setMatchDurMode] = useState('auto');
   const [manualDur, setManualDur] = useState(40);
@@ -1451,6 +1512,8 @@ export default function TournamentBuilder() {
       scheduleMode: 'sequential', restMode: 'auto', maxGamesPerDay: null,
     drawMode: 'sequential', numSeeds: 4,
     refereeMode: 'manual',
+    poMode: 'places', goldPlaces: 1, silverPlaces: 1, goldCount: 8, silverCount: 8,
+    goldFull: null, silverFull: null,
       ...(saved.params || {}),
     });
     setTeamNames(saved.teamNames || {});
@@ -1584,7 +1647,7 @@ export default function TournamentBuilder() {
     blockedSlotIdxs: [],
   };
 
-  const matches = useMemo(() => buildMatches(eff), [eff.totalTeams, eff.system, eff.groupSize, eff.advance, drawOrder]);
+  const matches = useMemo(() => buildMatches(eff), [eff.totalTeams, eff.system, eff.groupSize, eff.advance, drawOrder, eff.poMode, eff.goldPlaces, eff.silverPlaces, eff.goldCount, eff.silverCount, eff.goldFull, eff.silverFull]);
   // Первичное расписание без ограничений — нужно чтобы вычислить slotDur
   const baseSchedule = useMemo(() => scheduleMatches(matches, eff.fields, eff), [matches, eff.fields]);
   const baseStruct = useMemo(() => computeStructure(eff, matches, baseSchedule), [matches, baseSchedule, eff.days, eff.startTime, eff.endTime, eff.fields, eff.scheduleMode, eff.maxGamesPerDay, JSON.stringify(dayWindows)]);
@@ -1634,6 +1697,16 @@ export default function TournamentBuilder() {
   );
   const sidOf = (gi, pi) => (groups[gi] && groups[gi][pi - 1]) || 0;
 
+  // Слоты золото/серебро {group, place} в порядке посева (для подстановки мест в сетки)
+  const gsSlots = useMemo(() =>
+    (actualSystem === 'mixed-goldsilver' || actualSystem === 'mixed-goldsilver-full')
+      ? goldSilverSlots(groups, gsCfgFrom(params))
+      : { gold: [], silver: [] },
+    [actualSystem, groups, params.poMode, params.goldPlaces, params.silverPlaces, params.goldCount, params.silverCount]
+  );
+  const gsFull = gsBracketFull(params, actualSystem);
+  const isGoldSilver = actualSystem === 'mixed-goldsilver' || actualSystem === 'mixed-goldsilver-full';
+
   // Расчёт турнирной таблицы группы
   const computeStandings = (gi) => {
     const teams = groups[gi] || [];
@@ -1677,11 +1750,12 @@ export default function TournamentBuilder() {
     if (seedMatch) {
       const sd = +seedMatch[1];
       if (matchBracket === 'gold' || matchBracket === 'silver') {
-        // Золото/серебро: ровно один сеяный на группу — сид N это группа N,
-        // место — 1-е для золота, 2-е для серебра.
-        const st = allStandings[sd - 1];
+        // Золото/серебро: сид N — это N-й слот выхода {группа, место} в порядке посева.
+        const slot = (matchBracket === 'gold' ? gsSlots.gold : gsSlots.silver)[sd - 1];
+        if (!slot) return null;
+        const st = allStandings[slot.group - 1];
         if (!st) return null;
-        const row = st.find((r) => r.place === (matchBracket === 'gold' ? 1 : 2));
+        const row = st.find((r) => r.place === slot.place);
         return row ? { sid: row.sid, name: row.name } : null;
       }
       if (actualSystem === 'mixed' || actualSystem === 'mixed-full') {
@@ -1731,7 +1805,12 @@ export default function TournamentBuilder() {
     // Показываем понятный плейсхолдер
     const seed = raw.match(/^СИД(\d+)$/);
     if (seed && (m.bracket === 'gold' || m.bracket === 'silver')) {
-      return `${m.bracket === 'gold' ? '1-е' : '2-е'} Гр.${+seed[1]}`;
+      const slot = (m.bracket === 'gold' ? gsSlots.gold : gsSlots.silver)[+seed[1] - 1];
+      if (slot) {
+        const ord = ['', '1-е', '2-е', '3-е', '4-е', '5-е', '6-е', '7-е', '8-е'][slot.place] || `${slot.place}-е`;
+        return `${ord} Гр.${slot.group}`;
+      }
+      return 'место группы';
     }
     if (seed && (actualSystem === 'mixed' || actualSystem === 'mixed-full')) {
       const sd = +seed[1];
@@ -2102,6 +2181,54 @@ export default function TournamentBuilder() {
  {Array.from({length:16},(_,i)=>i+1).filter((n) => n <= actualGroupSize).map((n) => <option key={n} value={n}>топ-{n}</option>)}
  </select>
  </Field>
+ )}
+ {isGoldSilver && (
+ <>
+ <Field label="Отбор в плей-офф">
+ <select value={params.poMode === 'count' ? 'count' : 'places'} onChange={(e) => setParams({ ...params, poMode: e.target.value })} className="inp">
+ <option value="places">По местам в группе</option>
+ <option value="count">Числом команд</option>
+ </select>
+ </Field>
+ {(params.poMode === 'count') ? (
+ <>
+ <Field label="Команд в золото">
+ <BoundedNumber value={params.goldCount == null ? 0 : params.goldCount} min={0} max={eff.totalTeams}
+ onCommit={(n) => setParams({ ...params, goldCount: n })} />
+ </Field>
+ <Field label="Команд в серебро">
+ <BoundedNumber value={params.silverCount == null ? 0 : params.silverCount} min={0} max={eff.totalTeams}
+ onCommit={(n) => setParams({ ...params, silverCount: n })} />
+ </Field>
+ </>
+ ) : (
+ <>
+ <Field label="Мест в золото (из группы)">
+ <select value={params.goldPlaces == null ? 1 : params.goldPlaces} onChange={(e) => setParams({ ...params, goldPlaces: +e.target.value })} className="inp">
+ {Array.from({length: actualGroupSize},(_,i)=>i+1).map((n) => <option key={n} value={n}>{n}</option>)}
+ </select>
+ </Field>
+ <Field label="Мест в серебро (из группы)">
+ <select value={params.silverPlaces == null ? 1 : params.silverPlaces} onChange={(e) => setParams({ ...params, silverPlaces: +e.target.value })} className="inp">
+ {Array.from({length: actualGroupSize + 1},(_,i)=>i).filter((n) => n <= actualGroupSize - (params.goldPlaces == null ? 1 : params.goldPlaces)).map((n) => <option key={n} value={n}>{n === 0 ? 'нет' : n}</option>)}
+ </select>
+ </Field>
+ </>
+ )}
+ <Field label="Золото — система">
+ <select value={gsFull.goldFull ? 'full' : 'single'} onChange={(e) => setParams({ ...params, goldFull: e.target.value === 'full' })} className="inp">
+ <option value="single">Олимпийка на вылет</option>
+ <option value="full">Розыгрыш всех мест</option>
+ </select>
+ </Field>
+ <Field label="Серебро — система">
+ <select value={gsFull.silverFull ? 'full' : 'single'} onChange={(e) => setParams({ ...params, silverFull: e.target.value === 'full' })} className="inp">
+ <option value="single">Олимпийка на вылет</option>
+ <option value="full">Розыгрыш всех мест</option>
+ </select>
+ </Field>
+ <div className="text-[10px] text-neutral-400 -mt-1">🥇 Золото: {gsSlots.gold.length} команд · 🥈 Серебро: {gsSlots.silver.length} команд</div>
+ </>
  )}
 
  {/* Время матча */}
