@@ -804,6 +804,13 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
     let curRow = 4;
     let maxTeamColEnd = 1;
     const groupDividerRows = [];
+    // Уникальная строка служебной ячейки победитель/проигравший на КАЖДЫЙ матч.
+    // Раньше эти формулы клались в строку t1Row (визуальная позиция матча) в
+    // фиксированной колонке WIN_COL/LOSE_COL — а t1Row может совпадать у матчей
+    // разной глубины, из-за чего две формулы попадали в одну ячейку и poWinRef
+    // указывал на чужую формулу → циклическая ссылка (особенно при BYE). Свой
+    // ряд на матч это исключает. Колонки WIN_COL/LOSE_COL — далеко правее сетки.
+    let helperRow = 3;
 
     groupOrder.forEach((gKey) => {
       const group = groupsMap.get(gKey);
@@ -898,10 +905,11 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
         const scoreLoseF = `IF(AND(${g1Addr}<>"",${g2Addr}<>""),IF(${g1Addr}>${g2Addr},${t2Addr},IF(${g2Addr}>${g1Addr},${t1Addr},"")),"")`;
         const winF = `IF(${t1Addr}="BYE",${t2Addr},IF(${t2Addr}="BYE",${t1Addr},${scoreWinF}))`;
         const loseF = `IF(${t1Addr}="BYE",${t1Addr},IF(${t2Addr}="BYE",${t2Addr},${scoreLoseF}))`;
-        setCell(ws, `${COL(WIN_COL)}${t1Row}`, { f: winF });
-        setCell(ws, `${COL(LOSE_COL)}${t1Row}`, { f: loseF });
-        poWinRef[m.id] = `'Плей-офф'!$${COL(WIN_COL)}$${t1Row}`;
-        poLoseRef[m.id] = `'Плей-офф'!$${COL(LOSE_COL)}$${t1Row}`;
+        const hRow = ++helperRow; // своя строка служебной формулы на каждый матч
+        setCell(ws, `${COL(WIN_COL)}${hRow}`, { f: winF });
+        setCell(ws, `${COL(LOSE_COL)}${hRow}`, { f: loseF });
+        poWinRef[m.id] = `'Плей-офф'!$${COL(WIN_COL)}$${hRow}`;
+        poLoseRef[m.id] = `'Плей-офф'!$${COL(LOSE_COL)}$${hRow}`;
         poT1Ref[m.id] = `'Плей-офф'!$${COL(teamCol)}$${t1Row}`;
         poT2Ref[m.id] = `'Плей-офф'!$${COL(teamCol)}$${t2Row}`;
 
@@ -977,7 +985,7 @@ const generateXLSX = (params, structure, matches, schedule, slotDur, fieldNames 
       return { s: { r: row - 1, c: 0 }, e: { r: row - 1, c: maxTeamColEnd - 1 } };
     });
 
-    const lastRow = curRow - 2;
+    const lastRow = Math.max(curRow - 2, helperRow); // служебные строки тоже в диапазоне
     ws['!ref'] = `A1:${COL(Math.max(maxTeamColEnd, LOSE_COL))}${lastRow}`;
     const cols = [{ wch: 3 }];
     for (let ci = 2; ci <= maxTeamColEnd; ci++) {
