@@ -457,17 +457,22 @@ const scheduleMatches = (matches, fields, params) => {
     }
   };
 
+  // BYE-матч (у одной стороны нет соперника) не играется и не занимает слот —
+  // команда проходит дальше автоматически, поэтому в расписание его не ставим.
+  const isByeMatch = (m) => m.t1 === 'BYE' || m.t2 === 'BYE';
+
   const groupMatches = matches.filter((m) => m.phase === 'group');
   const poMatches = matches.filter((m) => m.phase === 'playoff');
 
   let maxGroupSlot = -1;
-  groupMatches.forEach((m) => { maxGroupSlot = Math.max(maxGroupSlot, place(m, 0)); });
+  groupMatches.forEach((m) => { if (isByeMatch(m)) return; maxGroupSlot = Math.max(maxGroupSlot, place(m, 0)); });
 
   // плей-офф: каждый раунд после предыдущего; первый раунд после групп
   let poMinSlot = maxGroupSlot + 1;
   let lastRound = 0;
   poMatches.forEach((m) => {
     if (m.round !== lastRound) { poMinSlot = Math.max(poMinSlot, (schedule.length ? Math.max(...schedule.map(s => s.slotIdx)) : -1) + 1); lastRound = m.round; }
+    if (isByeMatch(m)) return; // BYE не занимает слот
     place(m, poMinSlot);
   });
 
@@ -1308,7 +1313,8 @@ const getDayWindow = (dayNum, params) => {
 const computeStructure = (params, matches, schedule, slotDurOverride) => {
   const { totalTeams, system, groupSize, advance, fields, scheduleMode, maxGamesPerDay } = params;
   let days = Math.max(1, params.days || 1);
-  const games = matches.length;
+  // BYE-матчи не играются — не считаем их в числе матчей.
+  const games = matches.filter((m) => m.t1 !== 'BYE' && m.t2 !== 'BYE').length;
   const slotsNeeded = schedule.length === 0 ? 0 : Math.max(...schedule.map((s) => s.slotIdx)) + 1;
 
   const dayInfosFor = (n) => { const a = []; for (let d = 1; d <= n; d++) a.push(getDayWindow(d, params)); return a; };
@@ -2390,7 +2396,7 @@ export default function TournamentBuilder() {
  <h2 className="text-xs font-black text-[#0c0c0c] mb-4 uppercase tracking-widest">Структура</h2>
  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
  <Metric label="Система" value={sysLabel(actualSystem)} colorClass={sysColor(actualSystem)} inverted={isMixedFamily(actualSystem)} />
- <Metric label="Матчей" value={matches.length} />
+ <Metric label="Матчей" value={matches.filter((m) => m.t1 !== 'BYE' && m.t2 !== 'BYE').length} />
  <Metric label="Слотов" value={totalUsedSlots} />
  <Metric label="Слот" value={`${slotDur} мин`} warning={durStatus !== 'ok'} />
  {structure.numGroups > 0 && <Metric label="Групп" value={structure.numGroups} />}
