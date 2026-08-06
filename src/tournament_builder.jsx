@@ -463,6 +463,11 @@ const scheduleMatches = (matches, fields, params) => {
 
   const groupMatches = matches.filter((m) => m.phase === 'group');
   const poMatches = matches.filter((m) => m.phase === 'playoff');
+  // Финал (матч за 1-2 место) должен быть ПОСЛЕДНЕЙ игрой турнира — позже матча
+  // за бронзу и матчей за остальные места. Поэтому финалы планируем отдельно, в конце.
+  const isFinalMatch = (m) => m.roundName === 'Финал' && !m.isBronze;
+  const poNonFinal = poMatches.filter((m) => !isFinalMatch(m));
+  const poFinal = poMatches.filter(isFinalMatch);
 
   let maxGroupSlot = -1;
   groupMatches.forEach((m) => { if (isByeMatch(m)) return; maxGroupSlot = Math.max(maxGroupSlot, place(m, 0)); });
@@ -470,11 +475,19 @@ const scheduleMatches = (matches, fields, params) => {
   // плей-офф: каждый раунд после предыдущего; первый раунд после групп
   let poMinSlot = maxGroupSlot + 1;
   let lastRound = 0;
-  poMatches.forEach((m) => {
+  poNonFinal.forEach((m) => {
     if (m.round !== lastRound) { poMinSlot = Math.max(poMinSlot, (schedule.length ? Math.max(...schedule.map(s => s.slotIdx)) : -1) + 1); lastRound = m.round; }
     if (isByeMatch(m)) return; // BYE не занимает слот
     place(m, poMinSlot);
   });
+
+  // Финалы — строго последними, в новом слоте после бронзы/матчей за места.
+  if (poFinal.length) {
+    const finalSlot = (schedule.length ? Math.max(...schedule.map((s) => s.slotIdx)) : -1) + 1;
+    // серебряный финал раньше золотого, чтобы золотой финал был самой последней игрой
+    const ordered = [...poFinal].sort((a, b) => (a.bracket === 'gold' ? 1 : 0) - (b.bracket === 'gold' ? 1 : 0));
+    ordered.forEach((m) => { if (isByeMatch(m)) return; place(m, finalSlot); });
+  }
 
   return schedule.sort((a, b) => a.slotIdx - b.slotIdx || a.field - b.field);
 };
